@@ -94,23 +94,10 @@ class FlashUID(wiring.Component):
 
 # Test cases
 import unittest
-from random import randint
-from amaranth.sim import Simulator
-
 from .qspi import Controller, PortGroup, Mode
+from .test_util import stream_get, stream_put, simulate
 from amaranth.lib import io
 
-async def stream_get(ctx, stream):
-    ctx.set(stream.ready, 1)
-    payload, = await ctx.tick().sample(stream.payload).until(stream.valid)
-    ctx.set(stream.ready, 0)
-    return payload
-
-async def stream_put(ctx, stream, payload):
-    ctx.set(stream.valid, 1)
-    ctx.set(stream.payload, payload)
-    await ctx.tick().until(stream.ready)
-    ctx.set(stream.valid, 0)
 
 class TestStride(unittest.TestCase):
     class DUT(Elaboratable):
@@ -122,7 +109,6 @@ class TestStride(unittest.TestCase):
         def elaborate(self, platform) -> Module:
             m = Module()
 
-            
             m.submodules.uuid = uuid = FlashUID()
             m.submodules.qspi = qspi = Controller(self._pads)
 
@@ -136,16 +122,15 @@ class TestStride(unittest.TestCase):
 
             m.d.sync += uuid.req.eq(1)
             m.d.comb += qspi.divisor.eq(1)
- 
+
             return m
 
     def test_basic(self):
         pads = PortGroup(
-            sck=io.SimulationPort("o", 1),
+            clk=io.SimulationPort("o", 1),
             cs=io.SimulationPort("o", 1),
-            io=io.SimulationPort("io", 4)
+            dq=io.SimulationPort("io", 4),
         )
-
 
         dut = self.DUT(pads)
 
@@ -153,32 +138,8 @@ class TestStride(unittest.TestCase):
             await ctx.tick().repeat(3)
             await ctx.tick().repeat(500)
 
-            
-        uuid = [
-            0x00, # dummy 
-            0x00, # dummy 
-            0x00, # dummy 
-            0x11, 
-            0x22, 
-            0x33, 
-            0x44,
-            0x55,
-            0x66,
-            0x77,
-            0x88,
-        ]
+        simulate(dut, generator)
 
-        async def uuid_inject(ctx):
-            for u in uuid:
-                v = await stream_get(ctx, dut.qspi_o)
-                # await ctx.tick().until(dut.qspi_o.valid)
-                await stream_put(ctx, dut.uuid_i, {'data' : u})
-            await ctx.tick().sample(dut.uuid).until(dut.valid)
 
-        sim = Simulator(dut)
-        sim.add_clock(1e-6)
-        sim.add_testbench(generator)
-        # sim.add_testbench(uuid_inject)
-        # sim.run()
-        with sim.write_vcd("uuid.vcd"):
-            sim.run()
+if __name__ == "__main__":
+    unittest.main()

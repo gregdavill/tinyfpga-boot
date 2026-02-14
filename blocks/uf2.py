@@ -126,7 +126,7 @@ class UF2Decoder(wiring.Component):
 # Test cases
 import struct
 import unittest
-from amaranth.sim import Simulator
+from .test_util import stream_get, stream_put, simulate
 
 
 def make_uf2_block(addr, data_bytes, block_no=0, num_blocks=1, flags=0, family_id=0):
@@ -151,189 +151,95 @@ def make_uf2_block(addr, data_bytes, block_no=0, num_blocks=1, flags=0, family_i
     return block
 
 
-async def stream_get(ctx, stream):
-    ctx.set(stream.ready, 1)
-    payload, = await ctx.tick().sample(stream.payload).until(stream.valid)
-    ctx.set(stream.ready, 0)
-    return payload
-
-
-async def stream_put(ctx, stream, payload):
-    ctx.set(stream.valid, 1)
-    ctx.set(stream.payload, payload)
-    await ctx.tick().until(stream.ready)
-    ctx.set(stream.valid, 0)
-
-
 class TestUF2Decoder(unittest.TestCase):
 
-    def test_valid_block(self):
-        """Feed a valid UF2 block and check output addr/data pairs."""
-        dut = UF2Decoder()
-        payload = bytes(range(16))
-        block = make_uf2_block(addr=0x1000, data_bytes=payload, block_no=0, num_blocks=1)
+    def setUp(self):
+        self.dut = UF2Decoder()
+        self.error_seen = False
+        self.output_count = 0
+        self.done_seen = False
+        self.received = []
 
-        received = []
-
-        async def feeder(ctx):
-            for b in block:
-                await stream_put(ctx, dut.i, {"data": b})
-            # Let done propagate
-            await ctx.tick().repeat(3)
-
-        async def checker(ctx):
-            for _ in range(len(payload)):
-                p = await stream_get(ctx, dut.o)
-                received.append((p["addr"], p["data"]))
-
-        sim = Simulator(dut)
-        sim.add_clock(1e-6)
-        sim.add_testbench(feeder)
-        sim.add_testbench(checker)
-        with sim.write_vcd("uf2_valid.vcd"):
-            sim.run()
-
-        for i, (addr, d) in enumerate(received):
-            self.assertEqual(addr, 0x1000 + i, f"byte {i}: addr mismatch")
-            self.assertEqual(d, payload[i], f"byte {i}: data mismatch")
-        self.assertEqual(len(received), len(payload))
-
-    def test_bad_magic_start(self):
-        """A block with corrupted magicStart0 should assert error and produce no output."""
-        dut = UF2Decoder()
-        payload = bytes(range(8))
-        block = bytearray(make_uf2_block(addr=0x2000, data_bytes=payload))
-        # Corrupt first magic word
-        block[0] = 0xFF
-
-        output_count = 0
-        error_seen = False
-
-        async def feeder(ctx):
-            for b in block:
-                await stream_put(ctx, dut.i, {"data": b})
-            await ctx.tick().repeat(3)
-
-        async def monitor(ctx):
-            nonlocal output_count, error_seen
-            for _ in range(600):
-                await ctx.tick()
-                if ctx.get(dut.o.valid):
-                    output_count += 1
-                if ctx.get(dut.error):
-                    error_seen = True
-
-        sim = Simulator(dut)
-        sim.add_clock(1e-6)
-        sim.add_testbench(feeder)
-        sim.add_testbench(monitor)
-        with sim.write_vcd("uf2_bad_magic.vcd"):
-            sim.run()
-
-        self.assertTrue(error_seen, "error should be asserted on bad magic")
-        self.assertEqual(output_count, 0, "no output should be produced for bad block")
-
-    def test_not_main_flash_flag(self):
-        """A block with flags bit 0 set should be skipped (no output, error asserted)."""
-        dut = UF2Decoder()
-        payload = bytes(range(8))
-        block = make_uf2_block(addr=0x3000, data_bytes=payload, flags=0x0001)
-
-        output_count = 0
-        error_seen = False
-
-        async def feeder(ctx):
-            for b in block:
-                await stream_put(ctx, dut.i, {"data": b})
-            await ctx.tick().repeat(3)
-
-        async def monitor(ctx):
-            nonlocal output_count, error_seen
-            for _ in range(600):
-                await ctx.tick()
-                if ctx.get(dut.o.valid):
-                    output_count += 1
-                if ctx.get(dut.error):
-                    error_seen = True
-
-        sim = Simulator(dut)
-        sim.add_clock(1e-6)
-        sim.add_testbench(feeder)
-        sim.add_testbench(monitor)
-        with sim.write_vcd("uf2_skip_flag.vcd"):
-            sim.run()
-
-        self.assertTrue(error_seen, "error should be asserted when not-main-flash flag is set")
-        self.assertEqual(output_count, 0, "no output for skipped block")
-
-    def test_done_signal(self):
-        """done should assert when the final block of a multi-block transfer completes."""
-        dut = UF2Decoder()
-        payload = bytes([0xAA] * 4)
-        blocks = []
-        for i in range(3):
-            blocks.append(make_uf2_block(
-                addr=0x1000 + i * 4, data_bytes=payload,
-                block_no=i, num_blocks=3
-            ))
-
-        done_seen = False
-
+    def feed_blocks(self, *blocks):
+        dut = self.dut
         async def feeder(ctx):
             for block in blocks:
                 for b in block:
                     await stream_put(ctx, dut.i, {"data": b})
             await ctx.tick().repeat(5)
+        return feeder
 
-        async def output_sink(ctx):
-            """Consume output to prevent backpressure stalls."""
-            nonlocal done_seen
-            for _ in range(2000):
+    def monitor(self, cycles=600):
+        dut = self.dut
+        async def _monitor(ctx):
+            for _ in range(cycles):
                 await ctx.tick()
                 ctx.set(dut.o.ready, 1)
+                if ctx.get(dut.o.valid):
+                    self.output_count += 1
+                if ctx.get(dut.error):
+                    self.error_seen = True
                 if ctx.get(dut.done):
-                    done_seen = True
+                    self.done_seen = True
+        return _monitor
 
-        sim = Simulator(dut)
-        sim.add_clock(1e-6)
-        sim.add_testbench(feeder)
-        sim.add_testbench(output_sink)
-        with sim.write_vcd("uf2_done.vcd"):
-            sim.run()
+    def test_valid_block(self):
+        """Feed a valid UF2 block and check output addr/data pairs."""
+        payload = bytes(range(16))
+        block = make_uf2_block(addr=0x1000, data_bytes=payload, block_no=0, num_blocks=1)
+        dut = self.dut
 
-        self.assertTrue(done_seen, "done should assert after final block")
+        async def checker(ctx):
+            for _ in range(len(payload)):
+                p = await stream_get(ctx, dut.o)
+                self.received.append((p["addr"], p["data"]))
+
+        simulate(self.dut, self.feed_blocks(block), checker)
+
+        for i, (addr, d) in enumerate(self.received):
+            self.assertEqual(addr, 0x1000 + i, f"byte {i}: addr mismatch")
+            self.assertEqual(d, payload[i], f"byte {i}: data mismatch")
+        self.assertEqual(len(self.received), len(payload))
+
+    def test_bad_magic_start(self):
+        """A block with corrupted magicStart0 should assert error and produce no output."""
+        block = bytearray(make_uf2_block(addr=0x2000, data_bytes=bytes(range(8))))
+        block[0] = 0xFF
+
+        simulate(self.dut, self.feed_blocks(block), self.monitor())
+
+        self.assertTrue(self.error_seen, "error should be asserted on bad magic")
+        self.assertEqual(self.output_count, 0, "no output should be produced for bad block")
+
+    def test_not_main_flash_flag(self):
+        """A block with flags bit 0 set should be skipped (no output, error asserted)."""
+        block = make_uf2_block(addr=0x3000, data_bytes=bytes(range(8)), flags=0x0001)
+
+        simulate(self.dut, self.feed_blocks(block), self.monitor())
+
+        self.assertTrue(self.error_seen, "error should be asserted when not-main-flash flag is set")
+        self.assertEqual(self.output_count, 0, "no output for skipped block")
+
+    def test_done_signal(self):
+        """done should assert when the final block of a multi-block transfer completes."""
+        payload = bytes([0xAA] * 4)
+        blocks = [
+            make_uf2_block(addr=0x1000 + i * 4, data_bytes=payload, block_no=i, num_blocks=3)
+            for i in range(3)
+        ]
+
+        simulate(self.dut, self.feed_blocks(*blocks), self.monitor(cycles=2000))
+
+        self.assertTrue(self.done_seen, "done should assert after final block")
 
     def test_bad_magic_end(self):
         """A block with corrupted final magic should assert error."""
-        dut = UF2Decoder()
-        payload = bytes(range(4))
-        block = bytearray(make_uf2_block(addr=0x4000, data_bytes=payload))
-        # Corrupt final magic (last 4 bytes)
+        block = bytearray(make_uf2_block(addr=0x4000, data_bytes=bytes(range(4))))
         block[508] = 0xFF
 
-        error_seen = False
+        simulate(self.dut, self.feed_blocks(block), self.monitor())
 
-        async def feeder(ctx):
-            for b in block:
-                await stream_put(ctx, dut.i, {"data": b})
-            await ctx.tick().repeat(3)
-
-        async def output_sink(ctx):
-            nonlocal error_seen
-            for _ in range(600):
-                await ctx.tick()
-                ctx.set(dut.o.ready, 1)
-                if ctx.get(dut.error):
-                    error_seen = True
-
-        sim = Simulator(dut)
-        sim.add_clock(1e-6)
-        sim.add_testbench(feeder)
-        sim.add_testbench(output_sink)
-        with sim.write_vcd("uf2_bad_end.vcd"):
-            sim.run()
-
-        self.assertTrue(error_seen, "error should be asserted on bad final magic")
+        self.assertTrue(self.error_seen, "error should be asserted on bad final magic")
 
 
 if __name__ == "__main__":

@@ -208,60 +208,100 @@ class Controller(wiring.Component):
 
 # Test cases
 import unittest
-from random import randint
-from amaranth.sim import Simulator
+from .test_util import stream_get, stream_put, simulate
 
 
-async def stream_get(ctx, stream):
-    ctx.set(stream.ready, 1)
-    payload, = await ctx.tick().sample(stream.payload).until(stream.valid)
-    ctx.set(stream.ready, 0)
-    return payload
+class TestController(unittest.TestCase):
 
-async def stream_put(ctx, stream, payload):
-    ctx.set(stream.valid, 1)
-    ctx.set(stream.payload, payload)
-    await ctx.tick().until(stream.ready)
-    ctx.set(stream.valid, 0)
-
-class TestStride(unittest.TestCase):
-
-    def test_basic(self):
-        pads = PortGroup(
-            sck=io.SimulationPort("o", 1),
+    def setUp(self):
+        self.pads = PortGroup(
+            clk=io.SimulationPort("o", 1),
             cs=io.SimulationPort("o", 1),
-            io=io.SimulationPort("io", 4)
+            dq=io.SimulationPort("io", 4),
         )
+        self.dut = Controller(self.pads)
 
-
-        dut = Controller(pads)
-
-        src = [
-            0x00, 
-            0x55, 
-            0xA5, 
-            0x01, 
-            0x80
-        ]
-        
-
-        async def generator(ctx):
-            ctx.set(dut.divisor, 4)
+    def test_putx1(self):
+        dut = self.dut
+        async def testbench(ctx):
+            ctx.set(dut.divisor, 1)
             await ctx.tick().repeat(3)
-            await stream_put(ctx, dut.i, {'chip':1, 'data':0xFF, 'mode':Mode.PutX1})
-            await stream_put(ctx, dut.i, {'chip':1, 'data':0xFF, 'mode':Mode.Dummy})
-            
-            for v in src:
-                await stream_put(ctx, dut.i, {'chip':1, 'data':v, 'mode':Mode.PutX4})
+            await stream_put(ctx, dut.i, {'chip': 1, 'data': 0xA5, 'mode': Mode.PutX1})
+        simulate(dut, testbench)
 
-        # async def checker(ctx):
-        #     try:
-        #         (await stream_get(ctx, dut.o)) 
+    def test_putx4(self):
+        dut = self.dut
+        async def testbench(ctx):
+            ctx.set(dut.divisor, 1)
+            await ctx.tick().repeat(3)
+            for v in [0x55, 0xAA, 0xFF]:
+                await stream_put(ctx, dut.i, {'chip': 1, 'data': v, 'mode': Mode.PutX4})
+        simulate(dut, testbench)
 
-        sim = Simulator(dut)
-        sim.add_clock(1e-6)
-        sim.add_testbench(generator)
-        # sim.add_testbench(checker)
-        # sim.run()
-        with sim.write_vcd("qspi.vcd"):
-            sim.run()
+    def test_getx1_ones(self):
+        dut, pads = self.dut, self.pads
+        async def testbench(ctx):
+            ctx.set(dut.divisor, 1)
+            ctx.set(pads.dq.i, 0b0010)  # io1=1
+            await ctx.tick().repeat(3)
+            await stream_put(ctx, dut.i, {'chip': 1, 'data': 0, 'mode': Mode.GetX1})
+            result = await stream_get(ctx, dut.o)
+            self.assertEqual(result['data'], 0xFF)
+        simulate(dut, testbench)
+
+    def test_getx1_zeros(self):
+        dut, pads = self.dut, self.pads
+        async def testbench(ctx):
+            ctx.set(dut.divisor, 1)
+            ctx.set(pads.dq.i, 0b0000)  # io1=0
+            await ctx.tick().repeat(3)
+            await stream_put(ctx, dut.i, {'chip': 1, 'data': 0, 'mode': Mode.GetX1})
+            result = await stream_get(ctx, dut.o)
+            self.assertEqual(result['data'], 0x00)
+        simulate(dut, testbench)
+
+    def test_getx4(self):
+        dut, pads = self.dut, self.pads
+        async def testbench(ctx):
+            ctx.set(dut.divisor, 1)
+            ctx.set(pads.dq.i, 0b0101)  # Cat(io0,io1,io2,io3) = 1,0,1,0 = nibble 0x5
+            await ctx.tick().repeat(3)
+            await stream_put(ctx, dut.i, {'chip': 1, 'data': 0, 'mode': Mode.GetX4})
+            result = await stream_get(ctx, dut.o)
+            self.assertEqual(result['data'], 0x55)
+        simulate(dut, testbench)
+
+    def test_swap(self):
+        dut, pads = self.dut, self.pads
+        async def testbench(ctx):
+            ctx.set(dut.divisor, 1)
+            ctx.set(pads.dq.i, 0b0010)  # io1=1
+            await ctx.tick().repeat(3)
+            await stream_put(ctx, dut.i, {'chip': 1, 'data': 0xA5, 'mode': Mode.Swap})
+            result = await stream_get(ctx, dut.o)
+            self.assertEqual(result['data'], 0xFF)
+        simulate(dut, testbench)
+
+    def test_back_to_back_getx1(self):
+        dut, pads = self.dut, self.pads
+        async def testbench(ctx):
+            ctx.set(dut.divisor, 1)
+            ctx.set(pads.dq.i, 0b0010)  # io1=1
+            await ctx.tick().repeat(3)
+            for _ in range(3):
+                await stream_put(ctx, dut.i, {'chip': 1, 'data': 0, 'mode': Mode.GetX1})
+                result = await stream_get(ctx, dut.o)
+                self.assertEqual(result['data'], 0xFF)
+        simulate(dut, testbench)
+
+    def test_dummy_completes(self):
+        dut = self.dut
+        async def testbench(ctx):
+            ctx.set(dut.divisor, 1)
+            await ctx.tick().repeat(3)
+            await stream_put(ctx, dut.i, {'chip': 0, 'data': 0, 'mode': Mode.Dummy})
+        simulate(dut, testbench)
+
+
+if __name__ == "__main__":
+    unittest.main()
