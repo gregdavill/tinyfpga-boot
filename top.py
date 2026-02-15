@@ -1,13 +1,18 @@
 from amaranth import *
-from amaranth.lib import wiring
+from amaranth.lib import wiring, stream, data
 
 from usb_protocol.emitters   import DeviceDescriptorCollection
-from luna.usb2               import USBDevice, USBStreamOutEndpoint, USBStreamInEndpoint
+from luna.usb2               import USBDevice
+
+from blocks.luna_wrapper import USBStreamInEndpoint, USBStreamOutEndpoint
 
 from blocks.qspi import Controller
 from blocks.flash_uid import FlashUID
 from blocks.usb_serialnumber import USBSerialNumberHandler
 from blocks.dfu import DFUHandler
+
+from blocks.scsi import SCSIHandler, MassStorageRequestHandler
+from blocks.flash import QspiFlash
 
 
 class Top(Elaboratable):
@@ -20,7 +25,7 @@ class Top(Elaboratable):
             d.idVendor           = 0x1209
             d.idProduct          = 0x5af0
 
-            d.bcdDevice          = 1.0
+            d.bcdDevice          = 2.0
 
             d.iManufacturer      = "TinyFPGA"
             d.iProduct           = "Bootloader"
@@ -33,7 +38,27 @@ class Top(Elaboratable):
 
         with descriptors.ConfigurationDescriptor() as c:
 
-            c.bMaxPower = 0 # Self powered
+            c.bMaxPower = 100 
+
+            with c.InterfaceDescriptor() as i:
+                i.bInterfaceNumber   = 0
+                i.bInterfaceClass    = 0x08  # Mass Storage
+                i.bInterfaceSubclass = 0x06  # SCSI Transparent Command Set
+                i.bInterfaceProtocol = 0x50  # Bulk-Only Transport
+
+                i.iInterface = "UF2"
+
+                with i.EndpointDescriptor() as ep:
+                    ep.bEndpointAddress = 0x01  # EP1 OUT
+                    ep.bmAttributes     = 0x02  # Bulk
+                    ep.wMaxPacketSize   = 64
+                    ep.bInterval        = 0
+
+                with i.EndpointDescriptor() as ep:
+                    ep.bEndpointAddress = 0x81  # EP1 IN
+                    ep.bmAttributes     = 0x02  # Bulk
+                    ep.wMaxPacketSize   = 64
+                    ep.bInterval        = 0
 
         return descriptors
     
@@ -104,14 +129,37 @@ class Top(Elaboratable):
         descriptors = self.create_descriptors()
         handler = USBSerialNumberHandler(self.descriptor_iSerialNumber, len(uuid.uuid))
         
+        ms_handler = MassStorageRequestHandler(if_num=0)
+
         # Add our standard control endpoint to the device.
         ep = usb.add_standard_control_endpoint(descriptors, skiplist=[handler.skip])
 
         ep.add_request_handler(handler)
+        ep.add_request_handler(ms_handler)
         m.d.comb += [
             qspi.divisor.eq(4),
             handler.serial.eq(uuid.uuid),
         ]
+
+        # Add a stream endpoint to our device.
+        out_ep = USBStreamOutEndpoint(
+            endpoint_number=1,
+            max_packet_size=64,
+        )
+        usb.add_endpoint(out_ep)
+
+        # Add a stream endpoint to our device.
+        in_ep = USBStreamInEndpoint(
+            endpoint_number=1,
+            max_packet_size=64
+        )
+        usb.add_endpoint(in_ep)
+
+        m.submodules.scsi = scsi = ResetInserter(usb.reset_detected | ms_handler.reset)(SCSIHandler(block_count=16 * 1024 * 1024 // 512, block_size=512))
+        # m.submodules.flash = QspiFlash()
+
+        wiring.connect(m, ep_out=out_ep.o, scsi=scsi.rx)
+        wiring.connect(m, ep_in=in_ep.i, scsi=scsi.tx)
 
         with m.FSM():
             with m.State('UUID'):
@@ -125,12 +173,12 @@ class Top(Elaboratable):
                 m.d.comb += usb.connect.eq(1)
         
         
-        areas = [
-            (0x000000, 'Application gateware'), # Alt 0 (1MB into FLASH)
-        ]
+        # # TODO:: Connect DFUHanlder interface into QSPI/Flash controller
+        # areas = [
+        #     (0x000000, 'Application gateware'), # Alt 0 (1MB into FLASH)
+        # ]
 
-        # TODO:: Connect DFUHanlder interface into QSPI/Flash controller
-        dfu = DFUHandler(0, [offset for offset, name in areas], runtime=False)
-        ep.add_request_handler(dfu)
+        # dfu = DFUHandler(0, [offset for offset, name in areas], runtime=False)
+        # ep.add_request_handler(dfu)
 
         return m
