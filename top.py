@@ -8,7 +8,7 @@ from blocks.luna_wrapper import USBStreamInEndpoint, USBStreamOutEndpoint
 
 from blocks.qspi import Controller
 from blocks.flash_uid import FlashUID
-from blocks.usb_serialnumber import USBSerialNumberHandler
+from blocks.usb.serial_handler import USBRuntimeSerialDescriptorHandler
 from blocks.dfu import DFUHandler
 
 from blocks.scsi import SCSIHandler, MassStorageRequestHandler
@@ -128,12 +128,12 @@ class Top(Elaboratable):
 
         # Connect UUID to serial number
         descriptors = self.create_descriptors()
-        handler = USBSerialNumberHandler(self.descriptor_iSerialNumber, len(uuid.uuid))
+        handler = USBRuntimeSerialDescriptorHandler(self.descriptor_iSerialNumber, len(uuid.uuid))
         
         ms_handler = MassStorageRequestHandler(if_num=0)
 
         # Add our standard control endpoint to the device.
-        ep = usb.add_standard_control_endpoint(descriptors, skiplist=[handler.skip])
+        ep = usb.add_standard_control_endpoint(descriptors, skiplist=[handler.handler_condition])
 
         ep.add_request_handler(handler)
         ep.add_request_handler(ms_handler)

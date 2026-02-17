@@ -3,13 +3,11 @@ from usb_protocol.types import USBStandardRequests, USBRequestType, USBRequestRe
 
 from luna.gateware.usb.usb2.request import USBRequestHandler
 
-class USBSerialNumberHandler(USBRequestHandler):
+class USBRuntimeSerialDescriptorHandler(USBRequestHandler):
     def __init__(self, idx, bits):
         super().__init__()
 
         assert bits % 4 == 0
-
-        self.idx = idx
 
         self.serial = Signal(bits)
         self.valid = Signal()
@@ -18,11 +16,11 @@ class USBSerialNumberHandler(USBRequestHandler):
 
         self.request_done = Signal()
 
-        self.skip = lambda setup: \
+        self.handler_condition = lambda setup: \
             (setup.type == USBRequestType.STANDARD) & \
             (setup.recipient == USBRequestRecipient.DEVICE) & \
             (setup.request == USBStandardRequests.GET_DESCRIPTOR) & \
-            (setup.value == (DescriptorTypes.STRING << 8) | self.idx)
+            (setup.value == (DescriptorTypes.STRING << 8) | idx)
 
     def handle_get_descriptor(self, m, max_length):
         nibble_map = Array(b'0123456789abcdef')
@@ -76,19 +74,14 @@ class USBSerialNumberHandler(USBRequestHandler):
             m.d.comb += self.interface.handshakes_out.ack.eq(1)
             m.d.comb += self.request_done.eq(1)
 
-    def elaborate(self, platform):
+    def elaborate(self, _):
         m = Module()
 
         setup = self.interface.setup
 
         with m.FSM(domain = 'usb'):
             with m.State('IDLE'):
-                get_descriptor = \
-                    (setup.type == USBRequestType.STANDARD) & \
-                    (setup.recipient == USBRequestRecipient.DEVICE) & \
-                    (setup.request == USBStandardRequests.GET_DESCRIPTOR) & \
-                    (setup.value == (DescriptorTypes.STRING << 8) | self.idx)
-
+                get_descriptor = self.handler_condition(setup)
                 with m.If(setup.received & get_descriptor):
                     m.next = 'GET_DESCRIPTOR'
 
