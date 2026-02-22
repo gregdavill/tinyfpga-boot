@@ -111,9 +111,17 @@ def _pad_string(s, length):
 
 
 class SCSIHandler(wiring.Component):
-    def __init__(self, block_count, block_size=512):
+    def __init__(self, block_count, block_size=512, *,
+                 scsi_vendor="TINYFPGA", scsi_product="UF2 Bootloader",
+                 board_id="TinyFPGA-BX-v1", model="TinyFPGA BX",
+                 url="https://tinyfpga.com"):
         self.block_count = block_count
         self.block_size = block_size
+        self.scsi_vendor = scsi_vendor
+        self.scsi_product = scsi_product
+        self.board_id = board_id
+        self.model = model
+        self.url = url
         self._rom_data, self._rom_map = self._build_rom()
 
         super().__init__({
@@ -135,8 +143,8 @@ class SCSIHandler(wiring.Component):
         inquiry[2] = 0x02   # SCSI-2
         inquiry[3] = 0x02   # response data format
         inquiry[4] = 31     # additional length
-        inquiry[8:16]  = _pad_string("TINYFPGA", 8)
-        inquiry[16:32] = _pad_string("UF2 Bootloader", 16)
+        inquiry[8:16]  = _pad_string(self.scsi_vendor, 8)
+        inquiry[16:32] = _pad_string(self.scsi_product, 16)
         inquiry[32:36] = _pad_string("1.0", 4)
         rom.extend(inquiry)
         rom_map[OP_INQUIRY] = (base, 36)
@@ -171,7 +179,10 @@ class SCSIHandler(wiring.Component):
         rom_rp = rom.read_port(domain="sync")
 
         # GhostFAT submodule
-        m.submodules.ghostfat = ghostfat = GhostFAT(block_count=self.block_count)
+        m.submodules.ghostfat = ghostfat = GhostFAT(
+            block_count=self.block_count,
+            board_id=self.board_id, model=self.model, url=self.url,
+        )
 
         # CBW fields
         cbw_count = Signal(range(31))

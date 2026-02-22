@@ -112,13 +112,14 @@ def _build_file_sector(text):
     return s
 
 
-INFO_UF2_TEXT = "TinyFPGA Bootloader 1.0\r\nModel: TinyFPGA BX\r\nBoard-ID: TinyFPGA-BX-v1\r\n"
-INDEX_HTM_TEXT = '<!doctype html><html><body><script>location.replace("https://tinyfpga.com");</script></body></html>\r\n'
-
-
 class GhostFAT(wiring.Component):
-    def __init__(self, block_count=64):
+    def __init__(self, block_count=64, *,
+                 board_id="TinyFPGA-BX-v1", model="TinyFPGA BX",
+                 url="https://tinyfpga.com"):
         self.block_count = block_count
+        self.board_id = board_id
+        self.model = model
+        self.url = url
         self._build_sectors()
 
         super().__init__({
@@ -128,8 +129,11 @@ class GhostFAT(wiring.Component):
         })
 
     def _build_sectors(self):
-        info_data = INFO_UF2_TEXT.encode("ascii")
-        index_data = INDEX_HTM_TEXT.encode("ascii")
+        info_uf2_text = f"TinyFPGA Bootloader 1.0\r\nModel: {self.model}\r\nBoard-ID: {self.board_id}\r\n"
+        index_htm_text = f'<!doctype html><html><body><script>location.replace("{self.url}");</script></body></html>\r\n'
+
+        info_data = info_uf2_text.encode("ascii")
+        index_data = index_htm_text.encode("ascii")
         build_time = datetime.now()
 
         sectors = {
@@ -137,8 +141,8 @@ class GhostFAT(wiring.Component):
             1: _build_fat_sector(),
             2: _build_fat_sector(),
             3: _build_root_dir(len(info_data), len(index_data), build_time),
-            4: _build_file_sector(INFO_UF2_TEXT),
-            5: _build_file_sector(INDEX_HTM_TEXT),
+            4: _build_file_sector(info_uf2_text),
+            5: _build_file_sector(index_htm_text),
         }
 
         self._rom_data = []
@@ -280,7 +284,8 @@ class TestGhostFAT(unittest.TestCase):
             cluster = data[32+26] | (data[32+27] << 8)
             assert cluster == 2, f"cluster: {cluster}"
             size = data[32+28] | (data[32+29] << 8) | (data[32+30] << 16) | (data[32+31] << 24)
-            assert size == len(INFO_UF2_TEXT.encode("ascii")), f"size: {size}"
+            expected_info = "TinyFPGA Bootloader 1.0\r\nModel: TinyFPGA BX\r\nBoard-ID: TinyFPGA-BX-v1\r\n"
+            assert size == len(expected_info.encode("ascii")), f"size: {size}"
 
             # INFO_UF2.TXT timestamps should be non-zero
             create_time = data[32+14] | (data[32+15] << 8)

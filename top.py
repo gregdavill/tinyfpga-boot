@@ -17,19 +17,22 @@ from blocks.flash import QspiFlash
 
 
 class Top(Elaboratable):
+    def __init__(self, config=None):
+        self.config = config
+
     def create_descriptors(self):
         """ Create the descriptors we want to use for our device. """
 
         descriptors = DeviceDescriptorCollection()
 
         with descriptors.DeviceDescriptor() as d:
-            d.idVendor           = 0x1209
-            d.idProduct          = 0x5af0
+            d.idVendor           = self.config.vid if self.config else 0x1209
+            d.idProduct          = self.config.pid if self.config else 0x5af0
 
             d.bcdDevice          = 2.0
 
-            d.iManufacturer      = "TinyFPGA"
-            d.iProduct           = "Bootloader"
+            d.iManufacturer      = self.config.manufacturer if self.config else "TinyFPGA"
+            d.iProduct           = self.config.product if self.config else "Bootloader"
             d.iSerialNumber      = ""
 
             d.bNumConfigurations = 1
@@ -156,7 +159,16 @@ class Top(Elaboratable):
         )
         usb.add_endpoint(in_ep)
 
-        m.submodules.scsi = scsi = ResetInserter(usb.reset_detected | ms_handler.reset)(SCSIHandler(block_count=16 * 1024 * 1024 // 512, block_size=512))
+        scsi_kwargs = {}
+        if self.config:
+            scsi_kwargs = dict(
+                scsi_vendor=self.config.scsi_vendor,
+                scsi_product=self.config.scsi_product,
+                board_id=self.config.board_id,
+                model=self.config.model,
+                url=self.config.url,
+            )
+        m.submodules.scsi = scsi = ResetInserter(usb.reset_detected | ms_handler.reset)(SCSIHandler(block_count=16 * 1024 * 1024 // 512, block_size=512, **scsi_kwargs))
         m.submodules.uf2 = uf2 = UF2Decoder()
         m.submodules.flash = flash = QspiFlash()
 
