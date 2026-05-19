@@ -39,6 +39,10 @@ class UF2Decoder(wiring.Component):
                     # Shift in byte (little-endian: first byte is LSB)
                     m.d.sync += accum.eq(Cat(accum[8:], self.i.p.data))
 
+                    # New block starting — clear `done` from the previous transfer
+                    with m.If(byte_count == 0):
+                        m.d.sync += self.done.eq(0)
+
                     with m.Switch(byte_count):
                         with m.Case(3):
                             word = Cat(accum[8:], self.i.p.data)
