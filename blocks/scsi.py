@@ -344,8 +344,7 @@ class SCSIHandler(wiring.Component):
                     self.write_stream.p.data.eq(rx.p.data),
                     self.write_stream.p.first.eq(data_sent == 0),
                     self.write_stream.p.last.eq(data_sent == (transfer_length - 1)),
-                    # rx.ready.eq(self.write_stream.ready),
-                    rx.ready.eq(1),
+                    rx.ready.eq(self.write_stream.ready),
                 ]
                 with m.If(rx.valid & rx.ready):
                     m.d.sync += data_sent.eq(data_sent + 1)
