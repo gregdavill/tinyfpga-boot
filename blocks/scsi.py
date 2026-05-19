@@ -186,6 +186,7 @@ class SCSIHandler(wiring.Component):
 
         # CBW fields
         cbw_count = Signal(range(31))
+        cbw_signature = Signal(32)
         cbw_tag = Signal(32)
         transfer_length = Signal(32)
         cbw_flags = Signal(8)
@@ -216,6 +217,12 @@ class SCSIHandler(wiring.Component):
                 m.d.comb += rx.ready.eq(1)
                 with m.If(rx.valid):
                     # Latch individual fields by byte position
+                    # Signature: bytes 0-3 (LE). USB MSC §6.6.1
+                    # requires the device to detect an invalid CBW
+                    # signature and STALL / require Reset Recovery.
+                    for i in range(4):
+                        with m.If(cbw_count == i):
+                            m.d.sync += cbw_signature[i*8:(i+1)*8].eq(rx.p.data)
                     # Tag: bytes 4-7 (LE)
                     for i in range(4):
                         with m.If(cbw_count == (4 + i)):
@@ -237,9 +244,18 @@ class SCSIHandler(wiring.Component):
 
                     with m.If(cbw_count == 30):
                         m.d.sync += cbw_count.eq(0)
-                        m.next = "DISPATCH"
+                        with m.If(cbw_signature == C(CBW_SIGNATURE, 32)):
+                            m.next = "DISPATCH"
+                        with m.Else():
+                            # Invalid CBW — USB MSC §6.6.1. Wait for
+                            # Reset Recovery no CSW for this bad CBW
+                            m.next = "HALT"
                     with m.Else():
                         m.d.sync += cbw_count.eq(cbw_count + 1)
+
+            # ---- HALT: parked here after an invalid CBW. Await module level reset
+            with m.State("HALT"):
+                pass
 
             # ---- DISPATCH on SCSI opcode ----
             with m.State("DISPATCH"):
@@ -553,6 +569,36 @@ class TestSCSIHandler(unittest.TestCase):
             tag, residue, status = await recv_csw(ctx, dut.tx)
             assert tag == 6
             assert status == 1, "unknown command should fail"
+
+        simulate(dut, testbench)
+
+    def test_invalid_cbw_signature_halts(self):
+        """USB MSC §6.6.1: invalid CBW (bad signature) must NOT be
+        dispatched. SCSIHandler should enter its HALT state without
+        emitting a CSW — the host detects "no CSW" via timeout and
+        runs Reset Recovery. Block-level test only confirms tx stays
+        idle; integration-level recovery is covered by
+        test_scsi_bad_cbw_does_not_deadlock in the cocotb suite,
+        where the ResetInserter that clears HALT is also wired in."""
+        dut = self._make_dut()
+
+        async def testbench(ctx):
+            # Build a valid CBW first, then corrupt the signature.
+            cbw = make_cbw(tag=7, transfer_length=0, flags=0x00,
+                           cb_bytes=[OP_TEST_UNIT_READY])
+            cbw[0] = 0xDE   # smash dCBWSignature
+            cbw[1] = 0xAD
+            cbw[2] = 0xBE
+            cbw[3] = 0xEF
+            await send_cbw(ctx, dut.rx, cbw)
+
+            # tx must stay idle — no CSW should be emitted. Give the
+            # FSM 50 cycles to react; HALT enters within a few.
+            ctx.set(dut.tx.ready, 1)
+            for _ in range(50):
+                await ctx.tick()
+                assert not ctx.get(dut.tx.valid), \
+                    "tx.valid asserted after bad CBW — HALT state leaked a CSW"
 
         simulate(dut, testbench)
 
