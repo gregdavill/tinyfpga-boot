@@ -161,7 +161,7 @@ class Controller(wiring.Component):
         assert len(ports.dq) == 4 and ports.dq.direction == io.Direction.Bidir
 
         self._ports = PortGroup(
-            cs=~ports.cs,
+            cs=ports.cs,
             sck=ports.clk,
             io0=ports.dq[0],
             io1=ports.dq[1],
