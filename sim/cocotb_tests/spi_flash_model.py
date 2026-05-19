@@ -136,7 +136,7 @@ class SPIFlashModel:
         await First(opcode_task, cs_idle)
         if not opcode_task.done():
             # CS rose mid-opcode - aborted transaction.
-            opcode_task.kill()
+            opcode_task.cancel()
             return
         tx.opcode = opcode_task.result()
         _cov.cover_flash_opcode(tx.opcode)
@@ -196,7 +196,7 @@ class SPIFlashModel:
                 await self._shift_out(bytes([current]), lanes=1)
         task = cocotb.start_soon(stream())
         await cs_idle
-        task.kill()
+        task.cancel()
         tx.read_data = bytes([self.status])
 
     async def _cmd_page_program(self, tx: FlashTransaction, cs_idle, *, lanes: int):
@@ -213,7 +213,7 @@ class SPIFlashModel:
 
         task = cocotb.start_soon(stream())
         await cs_idle
-        task.kill()
+        task.cancel()
         tx.write_data = bytes(data)
         if self.status & 0x02:  # WEL must be set
             self._apply_page_program(addr, data)
@@ -253,7 +253,7 @@ class SPIFlashModel:
 
         task = cocotb.start_soon(stream())
         await cs_idle
-        task.kill()
+        task.cancel()
         tx.read_data = bytes(out)
 
     async def _cmd_release_pd(self, tx: FlashTransaction, cs_idle):
