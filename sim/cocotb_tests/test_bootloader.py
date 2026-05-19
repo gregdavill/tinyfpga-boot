@@ -327,6 +327,66 @@ async def test_uf2_multi_block_write(dut):
     assert bytes(flash.memory[base_addr + 256:base_addr + 512]) == payload_1
 
 
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_uf2_write_spans_sector_boundary(dut):
+    """Write a single UF2 block whose payload straddles a 4 KiB flash
+    sector boundary. Target 0x0000_FF80, 256 bytes → 128 bytes in
+    sector 0x00F, 128 bytes in sector 0x010. Verify the QspiFlash
+    issues two separate WREN → sector-erase → page-program sequences
+    (one per sector touched), and that all 256 payload bytes land
+    contiguously in the flash model.
+    """
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+    flash.transactions.clear()
+
+    target_addr = 0x0000_FF80
+    payload     = bytes((i + 0x40) & 0xFF for i in range(256))
+    uf2_block   = _build_uf2_block(target_addr=target_addr, payload=payload)
+
+    lba = target_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 1, 0)
+    cbw = _build_cbw(tag=0xC0FFEE, transfer_length=512, flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=uf2_block)
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xC0FFEE
+    assert residue == 0, f"unexpected residue {residue}"
+    assert status == 0, f"CSW status = {status}"
+
+    # 256 bytes at ~2.67 µs/byte + two erases + WRENs + status polls.
+    await Timer(2000, unit="us")
+
+    # Two sector erases, at the two sector-aligned addresses.
+    erase_addrs = sorted(
+        t.address for t in flash.transactions
+        if t.opcode == 0x20 and t.address is not None
+    )
+    assert erase_addrs == [0x00F000, 0x010000], \
+        f"unexpected sector erases: {[hex(a) for a in erase_addrs]}"
+
+    # At least one page program per sector touched (could be more if
+    # the flash controller splits at page boundaries within a sector).
+    program_addrs = [
+        t.address for t in flash.transactions
+        if t.opcode in (0x02, 0x32) and t.address is not None
+    ]
+    assert any(0x00F000 <= a < 0x010000 for a in program_addrs), \
+        f"no page program in sector 0x00F: {[hex(a) for a in program_addrs]}"
+    assert any(0x010000 <= a < 0x011000 for a in program_addrs), \
+        f"no page program in sector 0x010: {[hex(a) for a in program_addrs]}"
+
+    # The whole 256-byte slab should land contiguously across the
+    # sector boundary in the model.
+    assert bytes(flash.memory[target_addr:target_addr + 256]) == payload
+
+
 # ----------------------------------------------------------------------
 # Coverage finalizer — must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
