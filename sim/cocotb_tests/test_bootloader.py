@@ -146,10 +146,12 @@ async def test_serial_descriptor_uses_flash_uid(dut):
 
 
 # SCSI Bulk-Only Transport (USB MSC) constants.
-CBW_SIGNATURE = 0x43425355
-CSW_SIGNATURE = 0x53425355
-SCSI_READ_10  = 0x28
-SCSI_WRITE_10 = 0x2A
+CBW_SIGNATURE        = 0x43425355
+CSW_SIGNATURE        = 0x53425355
+SCSI_INQUIRY         = 0x12
+SCSI_READ_CAPACITY10 = 0x25
+SCSI_READ_10         = 0x28
+SCSI_WRITE_10        = 0x2A
 
 
 def _build_cbw(*, tag: int, transfer_length: int, flags: int, cb: bytes) -> bytes:
@@ -428,6 +430,76 @@ async def test_scsi_read_10_boot_sector(dut):
     assert tag == 0x12345678,    f"CSW tag mismatch: {tag:#010x}"
     assert residue == 0,         f"unexpected residue {residue}"
     assert status == 0,          f"CSW status = {status}"
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_inquiry(dut):
+    """SCSI INQUIRY over USB. Verify the device identifies as a
+    direct-access block device with the expected vendor/product
+    strings baked in at top.py.
+    """
+    host, _flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # INQUIRY CDB: opcode, EVPD/CMDDT bits, page code, reserved,
+    # allocation length (1 byte), control. Standard inquiry = EVPD=0,
+    # allocation_length=36.
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+    cbw = _build_cbw(tag=0xABCD0001, transfer_length=36, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    data = await host.bulk_in(endpoint=1, length=36)
+    assert len(data) == 36, f"short INQUIRY: {len(data)}B"
+
+    assert data[0] == 0x00, f"peripheral type: {data[0]:#04x} (want direct-access)"
+    assert data[1] == 0x80, f"removable bit: {data[1]:#04x}"
+    assert data[2] == 0x02, f"SCSI version: {data[2]:#04x}"
+    vendor  = bytes(data[8:16]).decode("ascii").strip()
+    product = bytes(data[16:32]).decode("ascii").strip()
+    assert vendor  == "TINYFPGA",       f"vendor: {vendor!r}"
+    assert product == "UF2 Bootloader", f"product: {product!r}"
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xABCD0001
+    assert residue == 0
+    assert status == 0
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_read_capacity(dut):
+    """SCSI READ_CAPACITY_10 over USB. Verify the device reports the
+    correct last-LBA and block size - derived from top.py's
+    SCSIHandler config (16 MiB / 512 B = 32768 blocks, so last LBA
+    is 32767).
+    """
+    host, _flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # READ_CAPACITY_10 CDB: 10 bytes, all zero except opcode.
+    cdb = bytes([SCSI_READ_CAPACITY10]) + b"\x00" * 9
+    cbw = _build_cbw(tag=0xABCD0002, transfer_length=8, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_READ_CAPACITY10, 1)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    data = await host.bulk_in(endpoint=1, length=8)
+    assert len(data) == 8, f"short READ_CAPACITY: {len(data)}B"
+
+    last_lba   = int.from_bytes(data[0:4], "big")
+    block_size = int.from_bytes(data[4:8], "big")
+    assert last_lba   == 32767, f"last LBA: {last_lba}"
+    assert block_size == 512,   f"block size: {block_size}"
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xABCD0002
+    assert residue == 0
+    assert status == 0
 
 
 # ----------------------------------------------------------------------
