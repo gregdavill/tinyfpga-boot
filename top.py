@@ -190,6 +190,7 @@ class Top(Elaboratable):
                 wiring.connect(m, uf2.o, flash.i)
                 wiring.connect(m, flash.qo, qspi.i)
                 wiring.connect(m, flash.qi, qspi.o)
+                m.d.comb += flash.done.eq(uf2.done)
         
         
         # # TODO:: Connect DFUHanlder interface into QSPI/Flash controller
