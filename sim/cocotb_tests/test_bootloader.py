@@ -936,6 +936,65 @@ async def test_uf2_bad_end_magic_reports_failure_to_host(dut):
 
 
 # ----------------------------------------------------------------------
+# corner / robustness
+# ----------------------------------------------------------------------
+
+@cocotb.test(timeout_time=TIMEOUT_UF2_MULTI, timeout_unit="us")
+async def test_uf2_multi_block_with_bad_end_magic_in_first_block(dut):
+    """Multi-block WRITE_10 where the FIRST block has a bad end magic
+    and the second is valid. The decoder's `error` latch is sticky
+    within a single CBW (no per-block clear), so the host must see
+    CSW.bCSWStatus=1 even though the trailing block validated.
+    """
+    host, _flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    base_addr  = 0x0003_0000
+    payload_0  = bytes((i + 0x10) & 0xFF for i in range(256))
+    payload_1  = bytes((i + 0x20) & 0xFF for i in range(256))
+    block_0    = _build_uf2_block(target_addr=base_addr,         payload=payload_0,
+                                  block_no=0, num_blocks=2,
+                                  end_magic=0xDEADBEEF)
+    block_1    = _build_uf2_block(target_addr=base_addr + 0x100, payload=payload_1,
+                                  block_no=1, num_blocks=2)
+    blocks     = block_0 + block_1
+
+    lba = base_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 2, 0)
+    cbw = _build_cbw(tag=0xBEDD0001, transfer_length=len(blocks),
+                     flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+    _cov.cover_uf2_outcome("bad_end_magic")
+    _cov.cover_uf2_outcome("multi_block")
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=blocks)
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xBEDD0001, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0,      f"unexpected residue {residue}"
+    assert status == 1, (
+        f"CSW status = {status} — bad end magic in block 0 must "
+        "propagate even when block 1 validates"
+    )
+
+    # Recovery: a follow-up valid INQUIRY must NOT inherit error.
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+    cbw_ok = _build_cbw(tag=0xBEDD0002, transfer_length=36, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+    await host.bulk_out(endpoint=1, payload=cbw_ok)
+    _    = await host.bulk_in(endpoint=1, length=36)
+    csw2 = await host.bulk_in(endpoint=1, length=13)
+    _, tag2, _, status2 = struct.unpack("<IIIB", csw2[:13])
+    assert tag2 == 0xBEDD0002
+    assert status2 == 0
+
+
+
+# ----------------------------------------------------------------------
 # Coverage finalizer - must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
 # ----------------------------------------------------------------------
