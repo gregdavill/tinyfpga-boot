@@ -555,6 +555,60 @@ async def test_scsi_bad_cbw_does_not_deadlock(dut):
     assert status == 0
 
 
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_ms_request_reset_clears_in_flight_scsi(dut):
+    """USB MSC Bulk-Only Transport §3.1 — Mass Storage Reset
+    (bRequest=0xFF, class+interface). In-flight SCSI state 
+    (cbw_count, data_sent, opcode, transfer_length) is wiped 
+    and the FSM returns to RECEIVE_CBW ready for a fresh command.
+
+    Test sequence:
+      1. Send a WRITE_10 CBW (transfer_length=512). SCSI parses it
+         and transitions to RECEIVE_WRITE_DATA expecting 512 bytes.
+      2. DON'T send the data — leave SCSI mid-stream.
+      3. Issue MS_REQUEST_RESET on EP0.
+      4. Send a fresh INQUIRY CBW. Test that it is serviced normally"""
+    host, _flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # Park SCSI in RECEIVE_WRITE_DATA by sending only the WRITE_10
+    # CBW (no data follow-up).
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, 0, 0, 1, 0)
+    write_cbw = _build_cbw(tag=0xDEAD, transfer_length=512,
+                           flags=0x00, cb=cdb)
+    await host.bulk_out(endpoint=1, payload=write_cbw)
+
+    # USB MSC class request:
+    #   bmRequestType = 0x21 — class, interface, host→device
+    #   bRequest      = 0xFF — Bulk-Only Mass Storage Reset
+    #   wValue        = 0
+    #   wIndex        = 0    — interface 0
+    #   wLength       = 0    — no data stage
+    await host.control_out(0x21, 0xFF, w_value=0, w_index=0, data=b"")
+    _cov.cover_usb_class_request(0xFF)
+
+    # SCSI is now back in RECEIVE_CBW. Run an INQUIRY end-to-end as
+    # proof of life.
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+    inquiry_cbw = _build_cbw(tag=0xC0FFEE, transfer_length=36,
+                             flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+
+    await host.bulk_out(endpoint=1, payload=inquiry_cbw)
+    data = await host.bulk_in(endpoint=1, length=36)
+    vendor = bytes(data[8:16]).decode("ascii").strip()
+    assert vendor == "TINYFPGA", \
+        f"INQUIRY after MS reset returned vendor {vendor!r} — reset failed?"
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xC0FFEE
+    assert residue == 0
+    assert status == 0
+
+
 # ----------------------------------------------------------------------
 # Coverage finalizer — must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
