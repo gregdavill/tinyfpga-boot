@@ -46,6 +46,14 @@ VERILOG_SOURCES := \
 	$(PWD)/build/sim_top.v \
 	$(PWD)/ice40_pll_sim.v \
 	$(CELLS_SIM_NO_PLL)
+
+# `make WAVES=1` uses cocotb's standard FST dumper.
+
+# `make DUMP=1` adds a verilog source as a VCD dumper.
+ifeq ($(DUMP), 1)
+VERILOG_SOURCES += $(PWD)/dump_flush.v
+COMPILE_ARGS    += -s dump_flush
+endif
 COCOTB_RESULTS_FILE := $(PWD)/build/results.xml
 SIM_BUILD := $(PWD)/build/sim_$(SIM)
 
