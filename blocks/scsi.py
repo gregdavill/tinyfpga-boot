@@ -281,6 +281,8 @@ class SCSIHandler(wiring.Component):
                         m.next = "SEND_SECTOR"
 
                     with m.Case(OP_WRITE_10):
+                        with m.If(scsi_lba >= self.block_count):
+                            m.d.sync += csw_status.eq(1)
                         m.next = "RECEIVE_WRITE_DATA"
 
                     with m.Default():
@@ -355,13 +357,16 @@ class SCSIHandler(wiring.Component):
 
             # ---- RECEIVE_WRITE_DATA ----
             with m.State("RECEIVE_WRITE_DATA"):
-                m.d.comb += [
-                    self.write_stream.valid.eq(rx.valid),
-                    self.write_stream.p.data.eq(rx.p.data),
-                    self.write_stream.p.first.eq(data_sent == 0),
-                    self.write_stream.p.last.eq(data_sent == (transfer_length - 1)),
-                    rx.ready.eq(self.write_stream.ready),
-                ]
+                with m.If(csw_status):
+                    m.d.comb += rx.ready.eq(1)
+                with m.Else():
+                    m.d.comb += [
+                        self.write_stream.valid.eq(rx.valid),
+                        self.write_stream.p.data.eq(rx.p.data),
+                        self.write_stream.p.first.eq(data_sent == 0),
+                        self.write_stream.p.last.eq(data_sent == (transfer_length - 1)),
+                        rx.ready.eq(self.write_stream.ready),
+                    ]
                 with m.If(rx.valid & rx.ready):
                     m.d.sync += data_sent.eq(data_sent + 1)
                     with m.If(data_sent == (transfer_length - 1)):

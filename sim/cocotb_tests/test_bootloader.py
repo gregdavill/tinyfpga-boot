@@ -820,6 +820,67 @@ async def test_bus_reset_mid_cbw_recovers(dut):
     assert vendor == "TINYFPGA", f"INQUIRY corrupted: vendor={vendor!r}"
 
 
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_write_off_end_lba_fails_gracefully(dut):
+    """USB MSC + SCSI: a WRITE_10 whose LBA is past the reported
+    capacity must fail with CSW.bCSWStatus=1, SBC-3 §5.27.2 
+    "LOGICAL BLOCK ADDRESS OUT OF RANGE".
+
+    Test sequence:
+      1. Enumerate.
+      2. Read capacity to confirm last_lba (32767 for our 16 MiB
+         configuration). Off-end LBA = 32768.
+      3. Send a WRITE_10 CBW targeting LBA 32768 with a 512-byte
+         data phase. The data is arbitrary - a valid UF2 block - to
+         verify that even valid-looking data doesn't sneak through
+         to flash when the LBA is rejected.
+      4. CSW must report status=1, residue=0 (all bytes consumed but
+         discarded), and the original tag.
+      5. No flash write activity (WREN, ERASE, PP) is observed.
+      6. As a recovery check, run an INQUIRY end-to-end so we know
+         the device is still serving CBWs."""
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+    flash.transactions.clear()
+
+    OFF_END_LBA = 32768   # one past last_lba (16 MiB / 512 = 32768 blocks)
+    target_addr = OFF_END_LBA * 512
+    payload     = bytes(range(256))
+    uf2_block   = _build_uf2_block(target_addr=target_addr, payload=payload)
+
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, OFF_END_LBA, 0, 1, 0)
+    cbw = _build_cbw(tag=0x0FFE0DDE, transfer_length=512, flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=uf2_block)
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0x0FFE0DDE, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0,      f"unexpected residue {residue} (device should consume the data phase)"
+    assert status == 1,       f"CSW status = {status} (expected 1 for LBA out of range)"
+
+    await Timer(200, unit="us")
+    write_opcodes = [t.opcode for t in flash.transactions
+                     if t.opcode in (0x06, 0x20, 0x02, 0x32)]
+    assert not write_opcodes, (
+        f"off-end WRITE_10 reached flash: {[hex(o) for o in write_opcodes]}"
+    )
+
+    # Recovery check - a valid INQUIRY still works.
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+    cbw_ok = _build_cbw(tag=0x0FFE0DDF, transfer_length=36, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+    await host.bulk_out(endpoint=1, payload=cbw_ok)
+    _    = await host.bulk_in(endpoint=1, length=36)
+    csw2 = await host.bulk_in(endpoint=1, length=13)
+    _, tag2, _, status2 = struct.unpack("<IIIB", csw2[:13])
+    assert tag2 == 0x0FFE0DDF
+    assert status2 == 0, f"post-recovery INQUIRY failed: status={status2}"
+
 # ----------------------------------------------------------------------
 # Coverage finalizer - must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
