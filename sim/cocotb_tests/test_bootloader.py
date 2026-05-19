@@ -8,6 +8,7 @@ from cocotb.triggers import Timer
 
 from .usb_host import USBHost
 from .spi_flash_model import SPIFlashModel
+from . import coverage as _cov
 
 
 # Descriptor type constants (USB 2.0 §9.4)
@@ -212,6 +213,10 @@ async def test_uf2_write_triggers_program(dut):
     cbw = _build_cbw(tag=0xDEADBEEF, transfer_length=512, flags=0x00, cb=cdb)
     assert len(cbw) == 31
 
+    _cov.cover_cbw(SCSI_WRITE_10, 0)   # WRITE_10, host → device
+    _cov.cover_uf2_outcome("valid_block")
+    _cov.cover_uf2_outcome("done_asserted")
+
     await host.bulk_out(endpoint=1, payload=cbw)
     await host.bulk_out(endpoint=1, payload=uf2_block)
 
@@ -241,3 +246,15 @@ async def test_uf2_write_triggers_program(dut):
     # And the bytes that landed in the flash model match the payload.
     assert bytes(flash.memory[target_addr:target_addr + len(payload)]) == payload, \
         "flash memory contents do not match the UF2 payload"
+
+
+# ----------------------------------------------------------------------
+# Coverage finalizer — must be the LAST @cocotb.test in this module so
+# the report covers every preceding test.
+# ----------------------------------------------------------------------
+
+@cocotb.test()
+async def _zzz_report_coverage(dut):
+    """Dump the functional-coverage report to sim/build/. Always
+    passes; functions as an end-of-regression hook."""
+    _cov.dump_reports()

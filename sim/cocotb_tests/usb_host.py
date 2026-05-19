@@ -25,11 +25,22 @@ from cocotb.clock import Clock
 from cocotb.utils import get_sim_time
 
 from .dut_pins import attach as attach_pins, release
+from . import coverage as _cov
 
 
 # ----------------------------------------------------------------------
 # Timing
 # ----------------------------------------------------------------------
+
+def _cov_sample_request(bm_request_type: int, b_request: int) -> None:
+    """Dispatch a control transfer to the matching coverage bin based on
+    bmRequestType's Type field (bits 5..6): 00=standard, 01=class."""
+    type_field = (bm_request_type >> 5) & 0x3
+    if type_field == 0:
+        _cov.cover_usb_standard_request(b_request)
+    elif type_field == 1:
+        _cov.cover_usb_class_request(b_request)
+
 
 def _level(signal) -> int:
     """Read a 1-bit inout pad as 0 / 1 / 1 (treats Z as J for pullup-driven idle)."""
@@ -431,6 +442,7 @@ class USBHost:
     async def control_in(self, bm_request_type: int, b_request: int,
                          w_value: int = 0, w_index: int = 0,
                          w_length: int = 0) -> bytes:
+        _cov_sample_request(bm_request_type, b_request)
         setup = bytes([
             bm_request_type, b_request,
             w_value & 0xFF, (w_value >> 8) & 0xFF,
@@ -459,6 +471,7 @@ class USBHost:
     async def control_out(self, bm_request_type: int, b_request: int,
                           w_value: int = 0, w_index: int = 0,
                           data: bytes = b""):
+        _cov_sample_request(bm_request_type, b_request)
         setup = bytes([
             bm_request_type, b_request,
             w_value & 0xFF, (w_value >> 8) & 0xFF,

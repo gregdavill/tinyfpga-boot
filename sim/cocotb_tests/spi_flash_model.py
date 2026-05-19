@@ -29,6 +29,7 @@ import cocotb
 from cocotb.triggers import Edge, RisingEdge, FallingEdge, First, Timer, Event
 
 from .dut_pins import attach as attach_pins, release
+from . import coverage as _cov
 
 
 def _read_dq(signal, *, lanes: int) -> int:
@@ -131,6 +132,7 @@ class SPIFlashModel:
             opcode_task.kill()
             return
         tx.opcode = opcode_task.result()
+        _cov.cover_flash_opcode(tx.opcode)
 
         # Dispatch on opcode. Each handler awaits `cs_idle` either
         # directly (for fixed-length commands like Read UID) or via a
@@ -266,6 +268,7 @@ class SPIFlashModel:
         """Capture `bits` bits across `lanes` DQ lines, MSB-first within
         each clock cycle. Returns the integer value."""
         assert bits % lanes == 0
+        _cov.cover_qspi_lanes(lanes)
         cycles = bits // lanes
         value  = 0
         # Make sure we're not driving DQ - the DUT is.
@@ -282,6 +285,7 @@ class SPIFlashModel:
     async def _shift_out(self, data: bytes, *, lanes: int):
         """Drive `data` MSB-first onto DQ over `lanes` lines. Driven on
         the falling edge so the DUT samples cleanly on the next rising."""
+        _cov.cover_qspi_lanes(lanes)
         mask = (1 << lanes) - 1
         for byte in data:
             cycles = 8 // lanes
