@@ -516,6 +516,31 @@ class USBHost:
     async def set_configuration(self, configuration: int):
         await self.control_out(0x00, 0x09, w_value=configuration)
 
+    async def clear_feature_endpoint_halt(self, endpoint_address: int):
+        """ClearFeature(ENDPOINT_HALT) - the spec way to force
+        the device to reset its data toggle for a bulk endpoint to
+        DATA0. `endpoint_address` follows the USB convention (bit 7 =
+        direction: 0=OUT, 1=IN; bits 3..0 = endpoint number).
+        """
+        # bmRequestType = 0x02 (standard, endpoint recipient, host→device)
+        # bRequest = 0x01 (CLEAR_FEATURE)
+        # wValue = 0x0000 (ENDPOINT_HALT feature selector)
+        # wIndex = endpoint address
+        await self.control_out(0x02, 0x01,
+                               w_value=0x0000,
+                               w_index=endpoint_address)
+
+    async def reset_bulk_toggles(self, endpoint_addresses):
+        """Convenience: ClearFeature(ENDPOINT_HALT) for each bulk
+        endpoint in `endpoint_addresses`. Call after `set_configuration`
+        to force the device's bulk toggles back to DATA0 in sync with
+        the host's `toggles.clear()`.
+
+        Endpoint addresses use the USB convention — e.g. `[0x01, 0x81]`
+        clears bulk OUT and bulk IN on endpoint 1."""
+        for ep in endpoint_addresses:
+            await self.clear_feature_endpoint_halt(ep)
+
     # ------------------------------------------------------------------
     # Bulk
     # ------------------------------------------------------------------
