@@ -18,6 +18,14 @@ class BoardConfig:
     scsi_vendor: str
     scsi_product: str
 
+    # SB_WARMBOOT slot to reload after a complete UF2 transfer
+    reload_slot: int = 1
+
+    # Sync-domain cycles of quiet required before firing SB_WARMBOOT
+    # (default ~50 ms at 12 MHz). None defers to the Warmboot block's 
+    # own default
+    reload_idle_cycles: int | None = None
+
 
 BOARDS = {
     "tinyfpga_bx": BoardConfig(

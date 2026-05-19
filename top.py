@@ -14,6 +14,7 @@ from blocks.dfu import DFUHandler
 from blocks.scsi import SCSIHandler, MassStorageRequestHandler
 from blocks.uf2 import UF2Decoder
 from blocks.flash import QspiFlash
+from blocks.warmboot import Warmboot
 
 
 class Top(Elaboratable):
@@ -172,6 +173,24 @@ class Top(Elaboratable):
         m.submodules.uf2 = uf2 = UF2Decoder()
         m.submodules.flash = flash = QspiFlash()
 
+        # Warm-reboot trigger: after a complete UF2 transfer
+        reload_slot = self.config.reload_slot if self.config else 1
+        reload_idle = (
+            self.config.reload_idle_cycles
+            if (self.config and self.config.reload_idle_cycles is not None)
+            else 600_000
+        )
+        # A bus reset mid-upload cancels any pending reload.
+        m.submodules.warmboot = warmboot = ResetInserter(usb.reset_detected)(
+            Warmboot(idle_threshold_cycles=reload_idle, slot=reload_slot)
+        )
+        m.d.comb += [
+            warmboot.arm.eq(uf2.done),
+            # Any of these high means the device is mid-transaction
+            # and we shouldn't reconfigure yet.
+            warmboot.activity.eq(scsi.rx.valid | scsi.tx.valid | flash.qo.valid),
+        ]
+
         wiring.connect(m, ep_out=out_ep.o, scsi=scsi.rx)
         wiring.connect(m, ep_in=in_ep.i, scsi=scsi.tx)
 
@@ -196,7 +215,11 @@ class Top(Elaboratable):
                     # Surface UF2 decode errors (e.g. bad end magic)
                     # to the host via the SCSI CSW status byte.
                     scsi.error_in.eq(uf2.error),
-                    uf2.clear.eq(scsi.clear_decoder),
+                    # `clear` also fires on a USB bus reset so a
+                    # mid-upload disconnect doesn't leave uf2.done
+                    # latched and accidentally re-arm Warmboot once
+                    # the bus comes back up.
+                    uf2.clear.eq(scsi.clear_decoder | usb.reset_detected),
                 ]
         
         

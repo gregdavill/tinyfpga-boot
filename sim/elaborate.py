@@ -14,6 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from top import Top                       # noqa: E402
+from build import BoardConfig                    # noqa: E402
 from sim.cocotb_platform import CocotbPlatform  # noqa: E402
 from sim import fsm_state_names                  # noqa: E402
 
@@ -67,7 +68,22 @@ def emit(platform, design, *, name: str = "sim_top", emit_src: bool = False) -> 
 
 def main():
     platform = CocotbPlatform()
-    top = Top()  # no config - defaults are fine for sim
+
+    # Use a sim-only config that mostly just shortens the warmboot
+    # idle window so the BOOT pulse fires inside our per-test sim-time
+    # budget. Hardware builds use the platform defaults ~50 ms.
+    sim_config = BoardConfig(
+        platform="tinyfpga_bx",
+        vid=0x1209, pid=0x5AF0,
+        manufacturer="TinyFPGA", product="Bootloader",
+        board_id="TinyFPGA-BX-v1", model="TinyFPGA BX",
+        url="https://tinyfpga.com",
+        scsi_vendor="TINYFPGA", scsi_product="UF2 Bootloader",
+        reload_slot=1,
+        # ~85 µs at 12 MHz
+        reload_idle_cycles=1000,
+    )
+    top = Top(sim_config)
 
     text = emit(platform, top)
 

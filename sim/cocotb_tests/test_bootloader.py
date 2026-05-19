@@ -1181,6 +1181,91 @@ async def test_scsi_read_10_off_end_lba_fails_gracefully(dut):
     assert status2 == 0, f"recovery INQUIRY failed: status={status2}"
 
 
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_warmboot_pulses_after_complete_uf2_transfer(dut):
+    """After a successful UF2 transfer, the bootloader must hand off
+    to the freshly-flashed user image via SB_WARMBOOT.
+
+    SB_WARMBOOT is a `(* blackbox *)` cell in yosys' cells_sim, so
+    no actual reconfiguration happens in iverilog. just probe
+    the internal `boot` wire to verify the pulse fires.
+
+    If the activity gate were missing, `boot` would fire during 
+    the CSW transmission.
+    """
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    target_addr = 0x0005_0000
+    payload     = bytes((i ^ 0x5A) & 0xFF for i in range(256))
+    uf2_block   = _build_uf2_block(target_addr=target_addr, payload=payload)
+
+    lba = target_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 1, 0)
+    cbw = _build_cbw(tag=0xBEEFB001, transfer_length=512, flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+    _cov.cover_uf2_outcome("valid_block")
+    _cov.cover_uf2_outcome("done_asserted")
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=uf2_block)
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, _, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xBEEFB001
+    assert status == 0
+
+    # The flash drain after CSW takes ~700 µs for the closing PP and
+    # status-polling, plus the 85 µs idle threshold. Poll for the
+    # BOOT pulse
+    boot_seen = False
+    for _ in range(2500):
+        await Timer(1, unit="us")
+        try:
+            if int(dut.warmboot.boot.value) == 1:
+                boot_seen = True
+                break
+        except (AttributeError, ValueError):
+            # Signal hasn't resolved or hierarchical path is wrong.
+            continue
+    assert boot_seen, (
+        "SB_WARMBOOT.BOOT never pulsed after a complete UF2 transfer "
+        "and ~2.5 ms idle window"
+    )
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_warmboot_does_not_pulse_without_uf2_done(dut):
+    """The warmboot trigger must only fire when uf2.done has been
+    asserted at least once. For a SCSI command that doesn't drive
+    UF2 (e.g. INQUIRY), no reload should ever happen no matter how
+    long the bus is idle afterwards.
+    """
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+    cbw = _build_cbw(tag=0xBEEFB002, transfer_length=36, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+    await host.bulk_out(endpoint=1, payload=cbw)
+    _   = await host.bulk_in(endpoint=1, length=36)
+    csw = await host.bulk_in(endpoint=1, length=13)
+    _, _, _, status = struct.unpack("<IIIB", csw[:13])
+    assert status == 0
+
+    # Idle for ~500 µs
+    for _ in range(500):
+        await Timer(1, unit="us")
+        try:
+            assert int(dut.warmboot.boot.value) == 0, (
+                "SB_WARMBOOT.BOOT fired without a preceding UF2 transfer"
+            )
+        except (AttributeError, ValueError):
+            continue
+
+
 # ----------------------------------------------------------------------
 # Coverage finalizer - must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
