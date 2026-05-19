@@ -283,9 +283,18 @@ class SCSIHandler(wiring.Component):
                             m.next = "SEND_RESPONSE"
 
                     with m.Case(OP_READ_10):
-                        m.d.sync += ghostfat.start.eq(1)
-                        m.d.comb += ghostfat.lba.eq(scsi_lba)
-                        m.next = "SEND_SECTOR"
+                        # USB MSC + SBC-3: an LBA past the reported
+                        # capacity must fail. Route through a
+                        # one-byte short-packet state that drains the
+                        # data phase via a single dummy byte then
+                        # send CSW status=1.
+                        with m.If(scsi_lba >= self.block_count):
+                            m.d.sync += csw_status.eq(1)
+                            m.next = "SEND_SHORT_DATA"
+                        with m.Else():
+                            m.d.sync += ghostfat.start.eq(1)
+                            m.d.comb += ghostfat.lba.eq(scsi_lba)
+                            m.next = "SEND_SECTOR"
 
                     with m.Case(OP_WRITE_10):
                         with m.If(scsi_lba >= self.block_count):
@@ -361,6 +370,23 @@ class SCSIHandler(wiring.Component):
                             ghostfat.start.eq(1),
                             sector_byte.eq(0),
                         ]
+
+            # ---- SEND_SHORT_DATA: emit a single zero byte as a
+            # short data packet to terminate the IN data phase.
+            # 
+            # This could be a ZLP, but USBStreamInEndpoint's 
+            # in LUNA don't support sending a stray ZLP without
+            # any preceeding data.
+            with m.State("SEND_SHORT_DATA"):
+                m.d.comb += [
+                    tx.valid.eq(1),
+                    tx.p.data.eq(0),
+                    tx.p.first.eq(1),
+                    tx.p.last.eq(1),
+                ]
+                with m.If(tx.ready):
+                    m.d.sync += data_sent.eq(1)
+                    m.next = "SEND_CSW_PREP"
 
             # ---- RECEIVE_WRITE_DATA ----
             with m.State("RECEIVE_WRITE_DATA"):

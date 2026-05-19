@@ -1128,6 +1128,59 @@ async def test_uf2_random_blocks_land_in_flash(dut):
             f"(first mismatch byte: {next((j for j, (a, b) in enumerate(zip(got, payload)) if a != b), '?')})"
         )
 
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_read_10_off_end_lba_fails_gracefully(dut):
+    """USB MSC §6.7 Case 5 (Hi > Dn): a READ_10 whose LBA is past
+    the reported capacity must signal end-of-data via a short data
+    packet and report CSW.bCSWStatus=1 with residue = Hi - Di.
+
+    Send 1 byte instead of a true ZLP. LUNA's USBStreamInEndpoint gates 
+    `flush` on a non-empty buffer so a pure 0-byte flush isn't available.
+
+    Test sequence:
+      1. Send READ_10 CBW with LBA=32768 (one past last_lba), Hi=512.
+      2. bulk_in(length=512) - host receives 1 byte, short-packet
+         break.
+      3. bulk_in(length=13) - host receives CSW with status=1,
+         residue=511.
+      4. Recovery: a follow-up INQUIRY must still work."""
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    OFF_END_LBA = 32768  # one past last_lba (16 MiB / 512 = 32768 blocks)
+    cdb = struct.pack(">BBIBHB", SCSI_READ_10, 0, OFF_END_LBA, 0, 1, 0)
+    cbw = _build_cbw(tag=0x0FFE0DD0, transfer_length=512,
+                     flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_READ_10, 1)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+
+    data = await host.bulk_in(endpoint=1, length=512)
+    assert len(data) == 1, (
+        f"expected a 1-byte short packet for off-end READ_10, "
+        f"got {len(data)} bytes"
+    )
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0x0FFE0DD0,    f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 512 - 1,   f"residue {residue} (expected 511 — Hi - Di)"
+    assert status == 1,          f"CSW status = {status} (expected 1)"
+
+    # Recovery: a follow-up INQUIRY still works.
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+    cbw_ok = _build_cbw(tag=0x0FFE0DD1, transfer_length=36, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+    await host.bulk_out(endpoint=1, payload=cbw_ok)
+    _    = await host.bulk_in(endpoint=1, length=36)
+    csw2 = await host.bulk_in(endpoint=1, length=13)
+    _, tag2, _, status2 = struct.unpack("<IIIB", csw2[:13])
+    assert tag2 == 0x0FFE0DD1
+    assert status2 == 0, f"recovery INQUIRY failed: status={status2}"
+
+
 # ----------------------------------------------------------------------
 # Coverage finalizer - must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
