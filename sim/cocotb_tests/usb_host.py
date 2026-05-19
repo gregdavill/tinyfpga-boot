@@ -508,7 +508,9 @@ class USBHost:
     # ------------------------------------------------------------------
 
     async def bulk_out(self, endpoint: int, payload: bytes, *, max_packet: int = 64,
-                       max_retries: int = 20):
+                       max_retries: int = 500, retry_interval_ns: int = 4000):
+        """Send `payload` as bulk OUT transfers, retrying on NAK.
+        """
         tog = self.toggles.setdefault(endpoint, EndpointToggle())
         for chunk_start in range(0, len(payload), max_packet):
             chunk = payload[chunk_start:chunk_start + max_packet]
@@ -517,7 +519,7 @@ class USBHost:
                 ok = await self.transaction_out(self.address, endpoint, chunk, data_pid=pid)
                 if ok:
                     break
-                await Timer(self.bit_ns * 8, unit="ns")
+                await Timer(retry_interval_ns, unit="ns")
             else:
                 raise RuntimeError(
                     f"bulk_out: endpoint {endpoint} NAKed {max_retries} times "
