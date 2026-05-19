@@ -148,6 +148,7 @@ async def test_serial_descriptor_uses_flash_uid(dut):
 # SCSI Bulk-Only Transport (USB MSC) constants.
 CBW_SIGNATURE        = 0x43425355
 CSW_SIGNATURE        = 0x53425355
+SCSI_TEST_UNIT_READY = 0x00
 SCSI_INQUIRY         = 0x12
 SCSI_READ_CAPACITY10 = 0x25
 SCSI_READ_10         = 0x28
@@ -169,22 +170,26 @@ def _build_cbw(*, tag: int, transfer_length: int, flags: int, cb: bytes) -> byte
 
 
 def _build_uf2_block(*, target_addr: int, payload: bytes,
-                     block_no: int = 0, num_blocks: int = 1) -> bytes:
-    """512-byte UF2 block. Fields per https://github.com/microsoft/uf2."""
+                     block_no: int = 0, num_blocks: int = 1,
+                     flags: int = 0, end_magic: int = 0x0AB16F30) -> bytes:
+    """512-byte UF2 block. Fields per https://github.com/microsoft/uf2.
+
+    `flags=0x0001` sets the "not main flash" bit (block should be
+    skipped). `end_magic` defaults to the canonical UF2 end magic; set
+    to a different value to test the decoder's end-magic check."""
     UF2_MAGIC_START0 = 0x0A324655
     UF2_MAGIC_START1 = 0x9E5D5157
-    UF2_MAGIC_END    = 0x0AB16F30
     assert len(payload) <= 476
     block = struct.pack(
         "<8I",
         UF2_MAGIC_START0, UF2_MAGIC_START1,
-        0x0,                # flags
+        flags,
         target_addr,
         len(payload),
         block_no,
         num_blocks,
         0,                  # familyID (unset)
-    ) + payload + b"\x00" * (476 - len(payload)) + struct.pack("<I", UF2_MAGIC_END)
+    ) + payload + b"\x00" * (476 - len(payload)) + struct.pack("<I", end_magic)
     assert len(block) == 512
     return block
 
@@ -609,7 +614,214 @@ async def test_ms_request_reset_clears_in_flight_scsi(dut):
 
 
 # ----------------------------------------------------------------------
-# Coverage finalizer — must be the LAST @cocotb.test in this module so
+# error / boundary cases
+# ----------------------------------------------------------------------
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_test_unit_ready_zero_length_cbw(dut):
+    """USB MSC §5.1: a CBW with dCBWDataTransferLength=0 has no data
+    phase - the device dispatches the SCSI command and emits a CSW
+    directly. TEST_UNIT_READY is the canonical zero-length CBW.
+
+    Exercises the SCSI DISPATCH → SEND_CSW_PREP path without any
+    intervening data state.
+    """
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    cdb = struct.pack(">BBBBBB", SCSI_TEST_UNIT_READY, 0, 0, 0, 0, 0)
+    cbw = _build_cbw(tag=0xABCD0003, transfer_length=0, flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_TEST_UNIT_READY, 0)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE, f"bad CSW signature {sig:#010x}"
+    assert tag == 0xABCD0003, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0, f"unexpected residue {residue}"
+    assert status == 0, f"CSW status = {status} (TEST_UNIT_READY should pass)"
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_uf2_not_main_flash_flag_skips_write(dut):
+    """UF2 spec: `flags & 0x0001` set means the block targets something
+    OTHER than main flash (e.g. bootloader RAM, EEPROM). Skip such blocks
+    entirely - no DATA bytes forwarded to the flash controller.
+
+    Checks:
+      * The SCSI WRITE_10 transaction completes (CSW status=0). The
+        not-main-flash skip is a UF2-level concern that's invisible to
+        SCSI - the device still consumed all 512 bytes.
+      * No flash write activity (no SECTOR_ERASE, no PAGE_PROGRAM)
+        occurs as a result of the skipped block.
+    """
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+    flash.transactions.clear()
+
+    target_addr = 0x0001_2000
+    payload     = bytes(range(256))
+    uf2_block   = _build_uf2_block(target_addr=target_addr, payload=payload,
+                                   flags=0x0001)
+
+    lba = target_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 1, 0)
+    cbw = _build_cbw(tag=0x1B1B1B1B, transfer_length=512, flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+    _cov.cover_uf2_outcome("not_main_flash")
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=uf2_block)
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0x1B1B1B1B, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0,      f"unexpected residue {residue}"
+    assert status == 0,       f"CSW status = {status} (SCSI still sees a successful write)"
+
+    # Let any in-flight flash activity settle, then check that NOTHING
+    # write-related touched the flash. The only opcodes we should see
+    # since `flash.transactions.clear()` are read-side commands the
+    # SCSI/UF2 path doesn't issue at all, so the list should stay empty.
+    await Timer(200, unit="us")
+    write_opcodes = [t.opcode for t in flash.transactions
+                     if t.opcode in (0x06, 0x20, 0x02, 0x32)]
+    assert not write_opcodes, (
+        f"unexpected flash write activity for not-main-flash block: "
+        f"{[hex(o) for o in write_opcodes]}"
+    )
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_clear_feature_endpoint_halt_resets_bulk_toggle(dut):
+    """USB 2.0 §9.4.5: ClearFeature(ENDPOINT_HALT) on a bulk endpoint
+    must reset the device's data toggle to DATA0.
+
+    Test sequence:
+      1. Enumerate. Run one INQUIRY end-to-end. Host's local OUT
+         toggle is now at DATA1 after the 31-byte CBW; device's
+         expected-toggle tracks in lockstep.
+      2. Issue ClearFeature(ENDPOINT_HALT) on EP1 OUT and EP1 IN.
+         The device's expected toggles should snap back to DATA0.
+      3. Clear the host's local toggle so the next transaction
+         starts at DATA0 too.
+      4. Send a fresh INQUIRY CBW. If the device's toggle WASN'T
+         reset, its expecting DATA1, and silently discards our
+         DATA0 CBW as a stale retransmission. The test times out
+         in that failure mode.
+
+    """
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+
+    # First INQUIRY - moves both endpoint toggles off DATA0.
+    cbw1 = _build_cbw(tag=0xC1EA0001, transfer_length=36, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+    await host.bulk_out(endpoint=1, payload=cbw1)
+    _    = await host.bulk_in(endpoint=1, length=36)
+    csw1 = await host.bulk_in(endpoint=1, length=13)
+    _, tag1, _, status1 = struct.unpack("<IIIB", csw1[:13])
+    assert tag1 == 0xC1EA0001 and status1 == 0, "baseline INQUIRY failed"
+
+    # ClearFeature(ENDPOINT_HALT) on both bulk endpoint directions -
+    # snaps the device's expected toggles back to DATA0. (Uses the
+    # helper from `usb_host.reset_bulk_toggles`.)
+    await host.reset_bulk_toggles([0x01, 0x81])
+    # And reset the host's local view to match.
+    host.toggles.clear()
+
+    # Second INQUIRY - only succeeds if the device's toggle was
+    # actually reset by the ClearFeature call.
+    cbw2 = _build_cbw(tag=0xC1EA0002, transfer_length=36, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+    await host.bulk_out(endpoint=1, payload=cbw2)
+    data = await host.bulk_in(endpoint=1, length=36)
+    csw2 = await host.bulk_in(endpoint=1, length=13)
+    sig, tag2, residue, status2 = struct.unpack("<IIIB", csw2[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag2 == 0xC1EA0002, (
+        f"CSW echoed tag {tag2:#010x}, not the post-ClearFeature CBW - "
+        "device toggle didn't reset"
+    )
+    assert residue == 0
+    assert status2 == 0
+    vendor = bytes(data[8:16]).decode("ascii").strip()
+    assert vendor == "TINYFPGA", f"INQUIRY data corrupted: vendor={vendor!r}"
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_bus_reset_mid_cbw_recovers(dut):
+    """Issuing a USB bus reset (SE0) part-way through a CBW must:
+      1. Trip the SCSIHandler's ResetInserter. Wiping cbw_count /
+         opcode / data_sent.
+      2. Reset bulk endpoint toggles.
+      3. Allow the host to re-enumerate from address 0 and execute a
+         fresh command without any leftover state from the aborted
+         CBW.
+
+    Test sequence:
+      1. Enumerate to a working configuration.
+      2. Send only 8 bytes of a CBW - SCSI parks in RECEIVE_CBW with
+         cbw_count=8, waiting for the rest of the 31 bytes.
+      3. Drive SE0 for ~30 µs (LUNA's USBResetSequencer accepts ≥2.5 µs).
+      4. Re-enumerate (set_address + set_configuration).
+      5. Run a full INQUIRY end-to-end. If any state leaked from the
+         aborted CBW (cbw_count, partial signature, etc.), the
+         INQUIRY would either parse as a continuation of the aborted
+         CBW or hit the bad-signature HALT path."""
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # Seed 8 bytes of garbage at the start of a would-be CBW. SCSI
+    # latches each byte but doesn't reach cbw_count==30, so nothing
+    # is dispatched. (The bytes happen to be a valid CBW prefix but
+    # we won't finish it.)
+    partial = bytes([0x55, 0x53, 0x42, 0x43,           # CBW_SIGNATURE LE
+                     0xDE, 0xAD, 0xBE, 0xEF])          # 4 bytes of tag
+    assert len(partial) == 8
+    await host.bulk_out(endpoint=1, payload=partial)
+
+    # Tear down the bus. After SE0 + release, address goes back to 0
+    # and toggles clear on both sides.
+    await host.reset_bus()
+
+    # Re-enumerate. (Don't call _bringup again - that would also
+    # restart the flash model.)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # If SCSI's cbw_count is still 8 from before the reset, the
+    # following CBW's first 23 bytes complete the abandoned CBW and
+    # dispatch on whichever opcode happens to land at byte 15. We
+    # want a clean fresh dispatch instead.
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+    cbw = _build_cbw(tag=0xBADC0FFE, transfer_length=36, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+    await host.bulk_out(endpoint=1, payload=cbw)
+    data = await host.bulk_in(endpoint=1, length=36)
+    csw  = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xBADC0FFE, (
+        f"CSW tag {tag:#010x} ≠ {0xBADC0FFE:#010x} - looks like the "
+        "post-reset CBW was misparsed as a continuation of the "
+        "abandoned one"
+    )
+    assert residue == 0
+    assert status == 0
+    vendor = bytes(data[8:16]).decode("ascii").strip()
+    assert vendor == "TINYFPGA", f"INQUIRY corrupted: vendor={vendor!r}"
+
+
+# ----------------------------------------------------------------------
+# Coverage finalizer - must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
 # ----------------------------------------------------------------------
 
