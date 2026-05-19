@@ -125,8 +125,10 @@ class SPIFlashModel:
 
         # --- opcode (1-bit) ---
         opcode_task = cocotb.start_soon(self._shift_in(8, lanes=1))
-        result = await First(opcode_task, cs_idle)
-        if result is cs_idle:
+        await First(opcode_task, cs_idle)
+        if not opcode_task.done():
+            # CS rose mid-opcode — aborted transaction.
+            opcode_task.kill()
             return
         tx.opcode = opcode_task.result()
 
