@@ -271,7 +271,9 @@ class USBHost:
         self.pins.usb_d_p.value = 0
         self.pins.usb_d_n.value = 0
         await Timer(duration_us, unit="us")
-        await self._release()
+        # Park the bus at J idle for the post-reset settle window —
+        # see `_drive_j_idle` for why we don't release here.
+        await self._drive_j_idle()
         await Timer(5, unit="us")
         self.address = 0
         self.toggles.clear()
@@ -301,6 +303,20 @@ class USBHost:
         """Release the bus - host stops driving, device pullup wins."""
         release(self.pins.usb_d_p)
         release(self.pins.usb_d_n)
+
+    async def _drive_j_idle(self):
+        """Actively park the bus at J (idle): D+ high, D- low.
+
+        Real USB FS hardware leaves the bus at J between transactions
+        via D+'s 1.5 kΩ pullup and D-'s 15 kΩ host-side pulldown.
+
+        The cocotb inout-pad model has no resistor behaviour, 
+        `_release()` leaves both lines Z, sampled by DUT as SE0.
+        
+        Call this after each transaction so long Timer waits between
+        bulk operations don't cause phantom bus-resets."""
+        self.pins.usb_d_p.value = 1
+        self.pins.usb_d_n.value = 0
 
     # ------------------------------------------------------------------
     # Packet TX
@@ -403,6 +419,7 @@ class USBHost:
         ack = await self.receive_packet()
         if not ack or ack[0] != PID.ACK.encoded():
             raise RuntimeError(f"SETUP not ACKed: got {ack!r}")
+        await self._drive_j_idle()
 
     async def transaction_in(self, addr: int, endpoint: int, expected_pid: PID | None = None) -> bytes:
         await self.send_packet(build_token(PID.IN, addr, endpoint))
@@ -420,6 +437,7 @@ class USBHost:
         # TODO: verify CRC16(payload) == int.from_bytes(crc, "little")
         await Timer(self.bit_ns * 2, unit="ns")
         await self.send_packet(build_handshake(PID.ACK))
+        await self._drive_j_idle()
         return payload
 
     async def transaction_out(self, addr: int, endpoint: int, payload: bytes, *, data_pid: PID):
@@ -430,9 +448,11 @@ class USBHost:
         if not ack:
             raise RuntimeError("OUT: no handshake")
         if ack[0] == PID.NAK.encoded():
+            await self._drive_j_idle()
             return False
         if ack[0] != PID.ACK.encoded():
             raise RuntimeError(f"OUT: unexpected handshake {ack[0]:02x}")
+        await self._drive_j_idle()
         return True
 
     # ------------------------------------------------------------------
