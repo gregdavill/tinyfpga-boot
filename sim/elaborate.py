@@ -15,6 +15,12 @@ sys.path.insert(0, str(ROOT))
 
 from top import Top                       # noqa: E402
 from sim.cocotb_platform import CocotbPlatform  # noqa: E402
+from sim import fsm_state_names                  # noqa: E402
+
+# Patch Amaranth so every `m.FSM()` also exposes an ASCII-encoded
+# state-name signal in the generated Verilog. Must run before Top()
+# is instantiated.
+fsm_state_names.install()
 
 
 def emit(platform, design, *, name: str = "sim_top", emit_src: bool = False) -> str:
