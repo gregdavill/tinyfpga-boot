@@ -1068,6 +1068,66 @@ async def test_uf2_write_with_slow_flash_wip_polling(dut):
         "flash contents differ from UF2 payload"
 
 
+@cocotb.test(timeout_time=TIMEOUT_UF2_MULTI, timeout_unit="us")
+async def test_uf2_random_blocks_land_in_flash(dut):
+    """Fuzz the WRITE_10 → UF2 → flash pipeline with a few independent
+    UF2 blocks targeting pseudo-random sector-aligned addresses with
+    pseudo-random payloads. After each transfer, verify the bytes
+    landed at the right offset and that the CSW status is clean.
+    """
+    import random
+    rng = random.Random(0xBADCAB1E)
+
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # Stay well clear of GhostFAT's 0x0000..0x000F sectors and the
+    # off-end region exercised in Tier 2. Pick from the 0x10..0x7F
+    # sector range so each transfer hits a fresh 4 KiB sector.
+    sector_candidates = list(range(0x10, 0x80))
+    rng.shuffle(sector_candidates)
+    n_blocks = 4
+    blocks_under_test = []
+    for sector in sector_candidates[:n_blocks]:
+        target_addr = sector << 12     # sector-aligned
+        # 256-byte payload (one full page program) of pseudo-random
+        # bytes - keeps each write at a single PP, no page-spanning.
+        payload = bytes(rng.randrange(256) for _ in range(256))
+        blocks_under_test.append((target_addr, payload))
+
+    flash.transactions.clear()
+
+    for i, (target_addr, payload) in enumerate(blocks_under_test):
+        uf2_block = _build_uf2_block(target_addr=target_addr, payload=payload)
+        lba = target_addr // 512
+        cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 1, 0)
+        cbw = _build_cbw(tag=0xFE0F0000 | i, transfer_length=512,
+                         flags=0x00, cb=cdb)
+        _cov.cover_cbw(SCSI_WRITE_10, 0)
+        _cov.cover_uf2_outcome("valid_block")
+
+        await host.bulk_out(endpoint=1, payload=cbw)
+        await host.bulk_out(endpoint=1, payload=uf2_block)
+
+        csw = await host.bulk_in(endpoint=1, length=13)
+        sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+        assert sig == CSW_SIGNATURE
+        assert tag == (0xFE0F0000 | i), f"block {i}: CSW tag mismatch ({tag:#010x})"
+        assert residue == 0,            f"block {i}: residue {residue}"
+        assert status == 0,             f"block {i}: status {status}"
+
+    # Wait for any tail flash activity to drain before reading memory.
+    await Timer(2000, unit="us")
+
+    # Every block's payload must be present at its target address.
+    for i, (target_addr, payload) in enumerate(blocks_under_test):
+        got = bytes(flash.memory[target_addr:target_addr + len(payload)])
+        assert got == payload, (
+            f"block {i} @ {target_addr:#x}: flash contents differ "
+            f"(first mismatch byte: {next((j for j, (a, b) in enumerate(zip(got, payload)) if a != b), '?')})"
+        )
+
 # ----------------------------------------------------------------------
 # Coverage finalizer - must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
