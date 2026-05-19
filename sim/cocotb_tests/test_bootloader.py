@@ -148,6 +148,7 @@ async def test_serial_descriptor_uses_flash_uid(dut):
 # SCSI Bulk-Only Transport (USB MSC) constants.
 CBW_SIGNATURE = 0x43425355
 CSW_SIGNATURE = 0x53425355
+SCSI_READ_10  = 0x28
 SCSI_WRITE_10 = 0x2A
 
 
@@ -385,6 +386,48 @@ async def test_uf2_write_spans_sector_boundary(dut):
     # The whole 256-byte slab should land contiguously across the
     # sector boundary in the model.
     assert bytes(flash.memory[target_addr:target_addr + 256]) == payload
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_read_10_boot_sector(dut):
+    """Read LBA 0 via SCSI READ_10 over USB and verify the device
+    returns a FAT16 boot sector (signature 0x55, 0xAA at offset 510).
+    Exercises the full READ path end-to-end:
+
+      SCSI DISPATCH(READ_10) → SEND_SECTOR → GhostFAT ROM read →
+      scsi.tx → USBStreamInEndpoint → host bulk_in (8 × 64-byte
+      packets) → final CSW.
+    """
+    host, _flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # READ_10 CDB: opcode, flags, 4 BE LBA bytes, group, 2 BE length,
+    # control. LBA=0, transfer length=1 sector.
+    cdb = struct.pack(">BBIBHB", SCSI_READ_10, 0, 0, 0, 1, 0)
+    cbw = _build_cbw(tag=0x12345678, transfer_length=512,
+                     flags=0x80, cb=cdb)   # 0x80 = device-to-host
+    _cov.cover_cbw(SCSI_READ_10, 1)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    data = await host.bulk_in(endpoint=1, length=512)
+    assert len(data) == 512, f"short READ_10 data: {len(data)}B"
+
+    # FAT16 boot sector signature.
+    assert data[510] == 0x55 and data[511] == 0xAA, (
+        f"missing FAT16 boot signature: "
+        f"got {data[510]:#04x}, {data[511]:#04x}"
+    )
+    # Bytes per sector at offset 11 (LE 16-bit) — 512 for GhostFAT.
+    bytes_per_sector = data[11] | (data[12] << 8)
+    assert bytes_per_sector == 512, f"bytes/sector: {bytes_per_sector}"
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE, f"bad CSW signature {sig:#010x}"
+    assert tag == 0x12345678,    f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0,         f"unexpected residue {residue}"
+    assert status == 0,          f"CSW status = {status}"
 
 
 # ----------------------------------------------------------------------
