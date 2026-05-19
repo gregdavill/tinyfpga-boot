@@ -518,7 +518,7 @@ async def test_scsi_bad_cbw_does_not_deadlock(dut):
     bad_cbw = struct.pack(
         "<IIIBBB",
         0xDEADBEEF,             # bad signature (real is CBW_SIGNATURE)
-        0x42424242,             # tag (still parsed from bytes 4-7)
+        0x42424242,             # tag (parsed but never echoed)
         0,                      # transfer_length = 0 (no data phase)
         0,                      # flags
         0,                      # LUN
@@ -527,15 +527,14 @@ async def test_scsi_bad_cbw_does_not_deadlock(dut):
     assert len(bad_cbw) == 31
 
     await host.bulk_out(endpoint=1, payload=bad_cbw)
-    csw = await host.bulk_in(endpoint=1, length=13)
-    sig, tag, _residue, status = struct.unpack("<IIIB", csw[:13])
-    # CSW itself should still be well-formed.
-    assert sig == CSW_SIGNATURE, f"bad CSW signature {sig:#010x}"
-    assert tag == 0x42424242,    f"CSW tag {tag:#010x} ≠ 0x42424242"
-    assert status == 1,          f"expected status=1 (unknown opcode), got {status}"
-    _cov.cover_cbw(0xFF, 0)  # UNKNOWN bin × host-to-device
+    _cov.cover_cbw(0xFF, 0)   # UNKNOWN bin × host-to-device
 
-    # Recovery check: a VALID INQUIRY CBW must still be serviced.
+    # No CSW is coming — SCSI is parked in HALT. Reset Recovery:
+    # Mass Storage Reset (class request, see scsi.MassStorageRequestHandler).
+    await host.control_out(0x21, 0xFF, w_value=0, w_index=0, data=b"")
+    _cov.cover_usb_class_request(0xFF)
+
+    # Recovery proof of life: a VALID INQUIRY CBW must be serviced.
     cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
     valid_cbw = _build_cbw(tag=0xC0FFEE, transfer_length=36,
                            flags=0x80, cb=cdb)
@@ -545,7 +544,7 @@ async def test_scsi_bad_cbw_does_not_deadlock(dut):
     data = await host.bulk_in(endpoint=1, length=36)
     vendor = bytes(data[8:16]).decode("ascii").strip()
     assert vendor == "TINYFPGA", \
-        f"INQUIRY after bad CBW returned vendor {vendor!r} — FSM stuck?"
+        f"INQUIRY after Reset Recovery returned vendor {vendor!r}"
 
     csw = await host.bulk_in(endpoint=1, length=13)
     sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
