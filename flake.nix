@@ -19,6 +19,24 @@
           nativeCheckInputs = [];
         });
 
+        # cocotb-coverage taken from PyPI release
+        cocotb-coverage = pkgs.python313Packages.buildPythonPackage rec {
+          pname = "cocotb-coverage";
+          version = "2.0";
+          format = "wheel";
+          src = pkgs.fetchurl {
+            url = "https://files.pythonhosted.org/packages/ae/cf/c49f7a475f2d0303007f8a5aaf9e3cbe098179c6bb956d770e881e88735a/cocotb_coverage-${version}-py3-none-any.whl";
+            sha256 = "1f65a15f7431b254bcb5f5a5d1b4676c5e89919546de4faaa4dbfda86f8300cb";
+          };
+          propagatedBuildInputs = with pkgs.python313Packages; [
+            cocotbUnbroken
+            python-constraint
+            pyyaml
+          ];
+          dontCheckRuntimeDeps = true;
+          doCheck = false;
+        };
+
         # Python interpreter with everything the project imports 
         python = pkgs.python313.withPackages (ps: with ps; [
           # gateware
@@ -29,6 +47,7 @@
           # sim + tests
           cocotbUnbroken
           cocotb-bus
+          cocotb-coverage
           pytest
           pytest-asyncio
         ]);

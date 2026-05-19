@@ -143,58 +143,101 @@ async def test_serial_descriptor_uses_flash_uid(dut):
         f"serial {text!r} does not contain UID hex {expected}"
 
 
-@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us", skip=True)
-async def test_uf2_write_triggers_program(dut):
-    """Push a single UF2 block to EP1 OUT and watch the flash see a
-    sector-erase + page-program at the address the block declared.
+# SCSI Bulk-Only Transport (USB MSC) constants.
+CBW_SIGNATURE = 0x43425355
+CSW_SIGNATURE = 0x53425355
+SCSI_WRITE_10 = 0x2A
 
-    SKIPPED - the device's EP1 OUT runs SCSI Bulk-Only Transport
-    (CBW → data → CSW), not raw UF2. The test below needs to wrap
-    the UF2 block in a SCSI WRITE-10 CBW first; until that's added,
-    the device persistently NAKs the raw bytes and the test stalls.
-    """
-    host, flash = await _bringup(dut)
-    await host.set_address(0x12)
-    await host.set_configuration(1)
 
-    # Reset transaction log so we only see the UF2-driven activity.
-    flash.transactions.clear()
+def _build_cbw(*, tag: int, transfer_length: int, flags: int, cb: bytes) -> bytes:
+    """31-byte Command Block Wrapper. `flags=0x00` → host-to-device."""
+    assert len(cb) <= 16
+    return struct.pack(
+        "<IIIBBB",
+        CBW_SIGNATURE,
+        tag,
+        transfer_length,
+        flags,
+        0,                  # LUN
+        len(cb),            # CB length
+    ) + cb + b"\x00" * (16 - len(cb))
 
-    # Minimal UF2 block (512 B). Fields per https://github.com/microsoft/uf2.
+
+def _build_uf2_block(*, target_addr: int, payload: bytes,
+                     block_no: int = 0, num_blocks: int = 1) -> bytes:
+    """512-byte UF2 block. Fields per https://github.com/microsoft/uf2."""
     UF2_MAGIC_START0 = 0x0A324655
     UF2_MAGIC_START1 = 0x9E5D5157
     UF2_MAGIC_END    = 0x0AB16F30
-    target_addr      = 0x0001_0000
-    payload          = bytes(range(256))
+    assert len(payload) <= 476
     block = struct.pack(
         "<8I",
         UF2_MAGIC_START0, UF2_MAGIC_START1,
         0x0,                # flags
         target_addr,
         len(payload),
-        0,                  # block number
-        1,                  # total blocks
+        block_no,
+        num_blocks,
         0,                  # familyID (unset)
     ) + payload + b"\x00" * (476 - len(payload)) + struct.pack("<I", UF2_MAGIC_END)
     assert len(block) == 512
+    return block
 
-    # SCSI bulk-only requires a CBW; the UF2 path inside the bootloader
-    # converts SCSI WRITE-10 → UF2 decoder → flash. For the sketch we
-    # assume the UF2 decoder will accept raw blocks on EP1 OUT - TODO:
-    # wrap in a real CBW once `MassStorageRequestHandler` framing is
-    # confirmed.
-    await host.bulk_out(endpoint=1, payload=block)
 
-    # Give the flash FSM a few µs to drain.
-    await Timer(50, unit="us")
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_uf2_write_triggers_program(dut):
+    """Push a single UF2 block through the SCSI WRITE-10 path and watch
+    the flash see WREN → sector erase → WREN → page program.
+
+    The device's EP1 OUT is mass storage (SCSI Bulk-Only Transport), so
+    the host has to wrap the UF2 block in a CBW. The device responds
+    with a CSW once the 512-byte WRITE-10 data phase is consumed."""
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # Reset the transaction log so we only see UF2-driven activity from
+    # here on (the boot-time UID read and any earlier SCSI commands are
+    # noise for this assertion).
+    flash.transactions.clear()
+
+    target_addr = 0x0001_0000
+    payload     = bytes(range(256))
+    uf2_block   = _build_uf2_block(target_addr=target_addr, payload=payload)
+
+    # WRITE-10 CDB: opcode, flags, 4 BE LBA bytes, group, 2 BE length, control.
+    # LBA = target_addr / 512; xfer length = 1 block (= 512 bytes).
+    lba = target_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 1, 0)
+    cbw = _build_cbw(tag=0xDEADBEEF, transfer_length=512, flags=0x00, cb=cdb)
+    assert len(cbw) == 31
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=uf2_block)
+
+    # Read the 13-byte Command Status Wrapper.
+    csw = await host.bulk_in(endpoint=1, length=13)
+    assert len(csw) == 13, f"short CSW: {csw.hex()}"
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE, f"bad CSW signature {sig:#010x}"
+    assert tag == 0xDEADBEEF, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0, f"unexpected residue {residue}"
+    assert status == 0, f"CSW status = {status} (command failed)"
+
+    # The QspiFlash FSM stays in WRITE_NEXT until `done` (driven by
+    # uf2.done at the end of the final block) lets it close the page.
+    # At divisor=4 the QSPI clock is 3 MHz, so 256 data bytes alone
+    # take ~700 µs. Give it >1 ms so the closing PP fully drains.
+    await Timer(1500, unit="us")
 
     opcodes = [t.opcode for t in flash.transactions]
-    assert 0x20 in opcodes, "no sector erase observed"
+    assert 0x20 in opcodes, f"no sector erase observed (opcodes={[hex(o) for o in opcodes]})"
     program_ops = [t for t in flash.transactions if t.opcode in (0x02, 0x32)]
-    assert program_ops, "no page program observed"
+    assert program_ops, f"no page program observed (opcodes={[hex(o) for o in opcodes]})"
     programmed = program_ops[0]
     assert programmed.address == target_addr, \
         f"programmed at {programmed.address:#x}, expected {target_addr:#x}"
 
     # And the bytes that landed in the flash model match the payload.
-    assert bytes(flash.memory[target_addr:target_addr + len(payload)]) == payload
+    assert bytes(flash.memory[target_addr:target_addr + len(payload)]) == payload, \
+        "flash memory contents do not match the UF2 payload"
