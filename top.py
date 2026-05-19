@@ -190,7 +190,14 @@ class Top(Elaboratable):
                 wiring.connect(m, uf2.o, flash.i)
                 wiring.connect(m, flash.qo, qspi.i)
                 wiring.connect(m, flash.qi, qspi.o)
-                m.d.comb += flash.done.eq(uf2.done)
+                m.d.comb += [
+                    flash.done.eq(uf2.done),
+                    
+                    # Surface UF2 decode errors (e.g. bad end magic)
+                    # to the host via the SCSI CSW status byte.
+                    scsi.error_in.eq(uf2.error),
+                    uf2.clear.eq(scsi.clear_decoder),
+                ]
         
         
         # # TODO:: Connect DFUHanlder interface into QSPI/Flash controller

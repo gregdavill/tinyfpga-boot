@@ -129,6 +129,11 @@ class SCSIHandler(wiring.Component):
             "tx":           Out(stream.Signature(_stream_layout)),
             "tx_flush":     Out(1),
             "write_stream": Out(stream.Signature(_stream_layout)),
+            # Downstream error feedback
+            "error_in":      In(1),
+            # 1-cycle pulse asserted in DISPATCH so the downstream UF2
+            # decoder can clear its transfer-level state
+            "clear_decoder": Out(1),
         })
 
     def _build_rom(self):
@@ -259,6 +264,8 @@ class SCSIHandler(wiring.Component):
 
             # ---- DISPATCH on SCSI opcode ----
             with m.State("DISPATCH"):
+                # Reset transfer-level decoder state
+                m.d.comb += self.clear_decoder.eq(1)
                 m.d.sync += [
                     data_sent.eq(0),
                     csw_status.eq(0),
@@ -376,12 +383,15 @@ class SCSIHandler(wiring.Component):
             with m.State("SEND_CSW_PREP"):
                 residue = Signal(32, name="residue")
                 m.d.comb += residue.eq(transfer_length - data_sent)
+                # OR decoder-level error sampled this cycle.
+                final_status = Signal(name="final_status")
+                m.d.comb += final_status.eq(csw_status | self.error_in)
                 m.d.sync += [
                     csw_data.eq(Cat(
                         C(CSW_SIGNATURE, 32),
                         cbw_tag,
                         residue,
-                        csw_status,
+                        final_status,
                         C(0, 7),  # pad status to fill byte 12
                     )),
                     csw_count.eq(0),

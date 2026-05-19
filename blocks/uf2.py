@@ -14,6 +14,10 @@ class UF2Decoder(wiring.Component):
         super().__init__({
             "i": In(stream.Signature(_stream_layout)),
             "o": Out(stream.Signature(data.StructLayout({"addr": 24, "data": 8}))),
+            
+            # Pulse high to reset transfer-level state (`error`, `done`). 
+            "clear":     In(1),
+            
             "error":     Out(1),
             "blockNo":   Out(32),
             "numBlocks": Out(32),
@@ -39,7 +43,7 @@ class UF2Decoder(wiring.Component):
                     # Shift in byte (little-endian: first byte is LSB)
                     m.d.sync += accum.eq(Cat(accum[8:], self.i.p.data))
 
-                    # New block starting — clear `done` from the previous transfer
+                    # New block starting - clear `done` from the previous transfer
                     with m.If(byte_count == 0):
                         m.d.sync += self.done.eq(0)
 
@@ -124,6 +128,11 @@ class UF2Decoder(wiring.Component):
                         m.d.sync += accum.eq(0)
                         m.d.sync += self.error.eq(0)
                         m.next = "HEADER"
+
+        # Transfer-level reset from upstream (SCSI).
+        with m.If(self.clear):
+            m.d.sync += self.done.eq(0)
+            m.d.sync += self.error.eq(0)
 
         return m
 

@@ -881,6 +881,60 @@ async def test_scsi_write_off_end_lba_fails_gracefully(dut):
     assert tag2 == 0x0FFE0DDF
     assert status2 == 0, f"post-recovery INQUIRY failed: status={status2}"
 
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_uf2_bad_end_magic_reports_failure_to_host(dut):
+    """UF2 spec: every block ends with the constant magic 0x0AB16F30.
+    If the trailer is corrupt, the decoder must reject the block and
+    the host must observe the failure.
+
+    Test sequence:
+      1. Send a single-block UF2 with end_magic=0xDEADBEEF.
+      2. CSW must report status=1.
+      3. Send a follow-up valid INQUIRY to prove the error latch was
+         cleared at DISPATCH
+    """
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+    flash.transactions.clear()
+
+    target_addr = 0x0002_0000
+    payload     = bytes(range(256))
+    uf2_block   = _build_uf2_block(target_addr=target_addr, payload=payload,
+                                   end_magic=0xDEADBEEF)
+
+    lba = target_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 1, 0)
+    cbw = _build_cbw(tag=0xBADC0FEE, transfer_length=512, flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+    _cov.cover_uf2_outcome("bad_end_magic")
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=uf2_block)
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xBADC0FEE, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0,      f"unexpected residue {residue}"
+    assert status == 1,       f"CSW status = {status} (expected 1 for bad UF2 end magic)"
+
+    # Recovery / decoder-clear check: an immediately following valid
+    # INQUIRY must NOT inherit the sticky uf2.error.
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+    cbw_ok = _build_cbw(tag=0xBADC0FEF, transfer_length=36, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+    await host.bulk_out(endpoint=1, payload=cbw_ok)
+    _    = await host.bulk_in(endpoint=1, length=36)
+    csw2 = await host.bulk_in(endpoint=1, length=13)
+    _, tag2, _, status2 = struct.unpack("<IIIB", csw2[:13])
+    assert tag2 == 0xBADC0FEF, f"CSW tag mismatch: {tag2:#010x}"
+    assert status2 == 0, (
+        f"INQUIRY after bad-end-magic returned status={status2} — "
+        "decoder clear didn't fire at DISPATCH"
+    )
+
+
 # ----------------------------------------------------------------------
 # Coverage finalizer - must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
