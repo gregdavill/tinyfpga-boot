@@ -502,6 +502,59 @@ async def test_scsi_read_capacity(dut):
     assert status == 0
 
 
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_bad_cbw_does_not_deadlock(dut):
+    """Send a CBW with a garbage signature and an unknown opcode,
+    then verify the device is still alive enough to service a
+    subsequent valid CBW.
+
+    USB MSC §6.6.1 - invalid CBW should STALL Bulk-In and require Reset Recovery
+    """
+    host, _flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # Bad CBW: garbage signature, unknown opcode, no data phase.
+    bad_cbw = struct.pack(
+        "<IIIBBB",
+        0xDEADBEEF,             # bad signature (real is CBW_SIGNATURE)
+        0x42424242,             # tag (still parsed from bytes 4-7)
+        0,                      # transfer_length = 0 (no data phase)
+        0,                      # flags
+        0,                      # LUN
+        1,                      # CB length
+    ) + bytes([0xFF]) + b"\x00" * 15        # CDB byte 0 = unknown opcode
+    assert len(bad_cbw) == 31
+
+    await host.bulk_out(endpoint=1, payload=bad_cbw)
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, _residue, status = struct.unpack("<IIIB", csw[:13])
+    # CSW itself should still be well-formed.
+    assert sig == CSW_SIGNATURE, f"bad CSW signature {sig:#010x}"
+    assert tag == 0x42424242,    f"CSW tag {tag:#010x} ≠ 0x42424242"
+    assert status == 1,          f"expected status=1 (unknown opcode), got {status}"
+    _cov.cover_cbw(0xFF, 0)  # UNKNOWN bin × host-to-device
+
+    # Recovery check: a VALID INQUIRY CBW must still be serviced.
+    cdb = struct.pack(">BBBBBB", SCSI_INQUIRY, 0, 0, 0, 36, 0)
+    valid_cbw = _build_cbw(tag=0xC0FFEE, transfer_length=36,
+                           flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_INQUIRY, 1)
+
+    await host.bulk_out(endpoint=1, payload=valid_cbw)
+    data = await host.bulk_in(endpoint=1, length=36)
+    vendor = bytes(data[8:16]).decode("ascii").strip()
+    assert vendor == "TINYFPGA", \
+        f"INQUIRY after bad CBW returned vendor {vendor!r} — FSM stuck?"
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xC0FFEE
+    assert residue == 0
+    assert status == 0
+
+
 # ----------------------------------------------------------------------
 # Coverage finalizer — must be the LAST @cocotb.test in this module so
 # the report covers every preceding test.
