@@ -88,7 +88,12 @@ class SPIFlashModel:
     SECTOR_SIZE = 4096
 
     def __init__(self, dut, *, size: int = 16 * 1024 * 1024,
-                 uid: bytes = b"\xCA\xFE\xBA\xBE\xDE\xAD\xBE\xEF"):
+                 uid: bytes = b"\xCA\xFE\xBA\xBE\xDE\xAD\xBE\xEF",
+                 wip_polls_after_write: int = 0):
+        """`wip_polls_after_write` simulates a flash that holds WIP=1 for
+        N status reads after each page-program or sector-erase before
+        clearing.
+        """
         assert len(uid) == 8
         self.dut    = dut
         self.pins   = attach_pins(dut)
@@ -100,6 +105,8 @@ class SPIFlashModel:
         self.transactions: list[FlashTransaction] = []
         # Status register: bit0 = WIP (write-in-progress), bit1 = WEL.
         self.status = 0x00
+        self.wip_polls_after_write = wip_polls_after_write
+        self._wip_remaining = 0
         # Release DQ - the DUT drives it during command/address; the
         # model drives it during read phases.
         release(self.pins.spi_dq)
@@ -128,7 +135,7 @@ class SPIFlashModel:
         opcode_task = cocotb.start_soon(self._shift_in(8, lanes=1))
         await First(opcode_task, cs_idle)
         if not opcode_task.done():
-            # CS rose mid-opcode — aborted transaction.
+            # CS rose mid-opcode - aborted transaction.
             opcode_task.kill()
             return
         tx.opcode = opcode_task.result()
@@ -182,7 +189,11 @@ class SPIFlashModel:
         # Drive status until CS# rises (host may clock as many bytes as it wants).
         async def stream():
             while True:
-                await self._shift_out(bytes([self.status]), lanes=1)
+                current = self.status
+                if self._wip_remaining > 0:
+                    current |= 0x01
+                    self._wip_remaining -= 1
+                await self._shift_out(bytes([current]), lanes=1)
         task = cocotb.start_soon(stream())
         await cs_idle
         task.kill()
@@ -207,6 +218,9 @@ class SPIFlashModel:
         if self.status & 0x02:  # WEL must be set
             self._apply_page_program(addr, data)
             self.status &= ~0x02
+            # Arm WIP for the next batch of POLL cycles. Real flash
+            # holds WIP through the internal program time
+            self._wip_remaining = self.wip_polls_after_write
 
     async def _cmd_sector_erase(self, tx: FlashTransaction, cs_idle):
         addr_bytes = await self._shift_in_bytes(3, lanes=1)
@@ -217,6 +231,7 @@ class SPIFlashModel:
             base = addr & ~(self.SECTOR_SIZE - 1)
             self.memory[base:base + self.SECTOR_SIZE] = b"\xFF" * self.SECTOR_SIZE
             self.status &= ~0x02
+            self._wip_remaining = self.wip_polls_after_write
 
     async def _cmd_fast_read(self, tx: FlashTransaction, cs_idle, *, lanes: int):
         addr_bytes = await self._shift_in_bytes(3, lanes=1)

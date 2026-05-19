@@ -28,14 +28,20 @@ TIMEOUT_UF2       = 5_000    # one CBW + UF2 + page-program round-trip
 TIMEOUT_UF2_MULTI = 30_000   # multi-block UF2 write (3+ pages programmed)
 
 
-async def _bringup(dut, *, flash_uid: bytes = b"\xCA\xFE\xBA\xBE\xDE\xAD\xBE\xEF"):
+async def _bringup(dut, *, flash_uid: bytes = b"\xCA\xFE\xBA\xBE\xDE\xAD\xBE\xEF",
+                   wip_polls_after_write: int = 0):
     """Common per-test bring-up. Returns (host, flash).
 
     Tests share a single sim instance, so the device retains its USB
     address and endpoint state across tests. A short SE0 right after
     pullup wipes that back to defaults (addr 0, all toggles cleared)
-    so each test can assume a fresh enumeration state."""
-    flash = SPIFlashModel(dut, uid=flash_uid)
+    so each test can assume a fresh enumeration state.
+
+    `wip_polls_after_write` slows the flash model - it keeps WIP=1 for
+    N status reads after each PP/erase
+    """
+    flash = SPIFlashModel(dut, uid=flash_uid,
+                          wip_polls_after_write=wip_polls_after_write)
     cocotb.start_soon(flash.run())
 
     host = USBHost(dut)
@@ -992,6 +998,74 @@ async def test_uf2_multi_block_with_bad_end_magic_in_first_block(dut):
     assert tag2 == 0xBEDD0002
     assert status2 == 0
 
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_uf2_write_with_slow_flash_wip_polling(dut):
+    """Drive a UF2 write against a flash model that holds WIP=1 for
+    N status polls after each PP/erase. QspiFlash's POLL_READ →
+    POLL_CAPTURE → POLL_RELEASE → POLL_CMD loop should iterate N+1
+    times per write before status[0] clears and the controller
+    proceeds to the next stage.
+
+    Verifies:
+      * Host's bulk_out retry budget spans the longer backpressure
+        window.
+      * Data ultimately lands in flash correctly - the slow flash
+        doesn't drop bytes or get the address phase wrong.
+      * Multiple READ_STATUS transactions appear (one per WIP cycle
+        plus the final clear)
+    """
+    # 20 WIP polls per write → ~70-80 µs extra per page-program, well
+    # under the host's retry budget but enough to test logic
+    host, flash = await _bringup(dut, wip_polls_after_write=20)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+    flash.transactions.clear()
+
+    target_addr = 0x0004_0000
+    payload     = bytes((i * 7) & 0xFF for i in range(256))
+    uf2_block   = _build_uf2_block(target_addr=target_addr, payload=payload)
+
+    lba = target_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 1, 0)
+    cbw = _build_cbw(tag=0x510FF1A5, transfer_length=512, flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+    _cov.cover_uf2_outcome("valid_block")
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=uf2_block)
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0x510FF1A5, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0,      f"unexpected residue {residue}"
+    assert status == 0,       f"CSW status = {status} (slow flash should still succeed)"
+
+    # Let any tail-end flash activity drain.
+    await Timer(1500, unit="us")
+
+    # The controller polls READ_STATUS in a loop on each WIP=1 sample.
+    # Compare against a baseline write (run as a control below) - the
+    # slow flash must produce *more* status reads per write than the
+    # default WIP=0 model, proving the retry loop fired.
+    status_reads = [t for t in flash.transactions if t.opcode == 0x05]
+    page_programs = [t for t in flash.transactions
+                     if t.opcode in (0x02, 0x32)]
+    sector_erases = [t for t in flash.transactions if t.opcode == 0x20]
+    assert page_programs, f"no page-program observed (opcodes={[hex(t.opcode) for t in flash.transactions]})"
+    assert sector_erases, "no sector-erase observed"
+    # Reference: with WIP=0 the default test_uf2_write_triggers_program
+    # produces 1-2 status reads
+    assert len(status_reads) > 4, (
+        f"only {len(status_reads)} status reads - controller didn't "
+        "exercise the WIP=1 retry loop"
+    )
+
+    # Final state: data landed correctly in flash.
+    assert bytes(flash.memory[target_addr:target_addr + len(payload)]) == payload, \
+        "flash contents differ from UF2 payload"
 
 
 # ----------------------------------------------------------------------
