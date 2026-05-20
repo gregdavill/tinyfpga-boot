@@ -41,12 +41,13 @@ SCSI_OPCODES = {
     "UNKNOWN":          0xFF,   # catch-all for the unknown-opcode path
 }
 
-# USB standard requests (bRequest values). Standard-only — class
-# requests on EP0 are tracked under USB_CLASS_REQUESTS.
+# USB standard requests (bRequest values) the device actually
+# services.
+#
+# SET_FEATURE (0x03) is not in LUNA's StandardRequestHandler 
 USB_STANDARD_REQUESTS = {
     "GET_STATUS":           0x00,
     "CLEAR_FEATURE":        0x01,
-    "SET_FEATURE":          0x03,
     "SET_ADDRESS":          0x05,
     "GET_DESCRIPTOR":       0x06,
     "SET_CONFIGURATION":    0x09,

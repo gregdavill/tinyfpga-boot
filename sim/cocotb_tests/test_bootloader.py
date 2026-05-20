@@ -155,10 +155,15 @@ async def test_serial_descriptor_uses_flash_uid(dut):
 CBW_SIGNATURE        = 0x43425355
 CSW_SIGNATURE        = 0x53425355
 SCSI_TEST_UNIT_READY = 0x00
+SCSI_REQUEST_SENSE   = 0x03
 SCSI_INQUIRY         = 0x12
+SCSI_MODE_SENSE_6    = 0x1A
 SCSI_READ_CAPACITY10 = 0x25
 SCSI_READ_10         = 0x28
 SCSI_WRITE_10        = 0x2A
+
+# Mass Storage class requests (bmRequestType bits 5..6 == class).
+MS_REQUEST_GET_MAX_LUN = 0xFE
 
 
 def _build_cbw(*, tag: int, transfer_length: int, flags: int, cb: bytes) -> bytes:
@@ -1264,6 +1269,166 @@ async def test_warmboot_does_not_pulse_without_uf2_done(dut):
             )
         except (AttributeError, ValueError):
             continue
+
+
+# ----------------------------------------------------------------------
+# Misc SCSI/USB requests
+# ----------------------------------------------------------------------
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_request_sense(dut):
+    """SCSI REQUEST_SENSE over USB. The device serves an 18-byte
+    fixed sense buffer from its ROM (response code 0x70, additional
+    sense length 10).
+    """
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # REQUEST_SENSE CDB: opcode, desc/flags, 2 reserved, allocation
+    # length, control. Allocation length = 18 (standard fixed sense).
+    cdb = struct.pack(">BBBBBB", SCSI_REQUEST_SENSE, 0, 0, 0, 18, 0)
+    cbw = _build_cbw(tag=0x5E0E0001, transfer_length=18, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_REQUEST_SENSE, 1)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    data = await host.bulk_in(endpoint=1, length=18)
+    assert len(data) == 18, f"short REQUEST_SENSE: {len(data)}B"
+    assert data[0] == 0x70, f"response code: {data[0]:#04x} (want 0x70)"
+    assert data[7] == 10,   f"additional sense length: {data[7]} (want 10)"
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0x5E0E0001
+    assert residue == 0
+    assert status == 0
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_mode_sense_6(dut):
+    """SCSI MODE_SENSE(6) over USB. The device returns a 4-byte mode
+    parameter header (mode data length = 3, no block descriptors).
+    """
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # MODE_SENSE(6) CDB: opcode, DBD/flags, page code, subpage,
+    # allocation length, control. Allocation length = 4 (header only).
+    cdb = struct.pack(">BBBBBB", SCSI_MODE_SENSE_6, 0, 0, 0, 4, 0)
+    cbw = _build_cbw(tag=0x5E0E0002, transfer_length=4, flags=0x80, cb=cdb)
+    _cov.cover_cbw(SCSI_MODE_SENSE_6, 1)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    data = await host.bulk_in(endpoint=1, length=4)
+    assert len(data) == 4, f"short MODE_SENSE: {len(data)}B"
+    assert data[0] == 3,   f"mode data length: {data[0]} (want 3)"
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0x5E0E0002
+    assert residue == 0
+    assert status == 0
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_uf2_bad_start_magic_reports_failure_to_host(dut):
+    """UF2 spec: every block begins with magicStart0 (0x0A324655)
+    and magicStart1 (0x9E5D5157). A block with a corrupt start magic
+    must be rejected - the decoder asserts `error` and skips to
+    DISCARD, host sees CSW.bCSWStatus=1.
+    """
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+    flash.transactions.clear()
+
+    target_addr = 0x0006_0000
+    payload     = bytes(range(256))
+    block = bytearray(_build_uf2_block(target_addr=target_addr, payload=payload))
+    block[0] ^= 0xFF   # smash magicStart0
+
+    lba = target_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 1, 0)
+    cbw = _build_cbw(tag=0xBAD50000, transfer_length=512, flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+    _cov.cover_uf2_outcome("bad_start_magic")
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=bytes(block))
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xBAD50000, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0
+    assert status == 1, f"CSW status = {status} (expected 1 for bad start magic)"
+
+    # No flash writes — the block was discarded before any DATA bytes
+    # reached the flash controller.
+    await Timer(200, unit="us")
+    write_opcodes = [t.opcode for t in flash.transactions
+                     if t.opcode in (0x06, 0x20, 0x02, 0x32)]
+    assert not write_opcodes, (
+        f"bad-start-magic block reached flash: {[hex(o) for o in write_opcodes]}"
+    )
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_ms_get_max_lun(dut):
+    """USB MSC Bulk-Only Transport §3.2 — Get Max LUN
+    (bRequest=0xFE, class+interface, device→host).
+    """
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # bmRequestType = 0xA1 (class, interface recipient, device→host)
+    data = await host.control_in(0xA1, MS_REQUEST_GET_MAX_LUN,
+                                 w_value=0, w_index=0, w_length=1)
+    assert len(data) == 1, f"Get Max LUN returned {len(data)} bytes, want 1"
+    assert data[0] == 0,   f"max LUN = {data[0]} (want 0 — single logical unit)"
+
+
+@cocotb.test(timeout_time=TIMEOUT_ENUM, timeout_unit="us")
+async def test_get_status_device(dut):
+    """USB 2.0 §9.4.5 — GET_STATUS (device recipient).
+    """
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    # bmRequestType = 0x80 (device→host, standard, device recipient)
+    status = await host.control_in(0x80, 0x00, w_value=0, w_index=0, w_length=2)
+    assert len(status) == 2, f"GET_STATUS returned {len(status)} bytes, want 2"
+    # Bus-powered, no remote wakeup → both status bits clear.
+    assert status[0] == 0 and status[1] == 0, \
+        f"unexpected device status {status[0]:#04x} {status[1]:#04x}"
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_scsi_unknown_opcode_device_to_host(dut):
+    """Unknown SCSI opcode carried in a device→host CBW with no
+    data phase (transfer_length=0) must still fail cleanly with
+    CSW.bCSWStatus=1.
+    """
+    host, _ = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+
+    cdb = struct.pack(">BBBBBB", 0xFD, 0, 0, 0, 0, 0)   # 0xFD = unknown
+    cbw = _build_cbw(tag=0x000DEAD0, transfer_length=0, flags=0x80, cb=cdb)
+    _cov.cover_cbw(0xFF, 1)   # UNKNOWN bin × device_to_host
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0x000DEAD0, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0
+    assert status == 1, f"CSW status = {status} (expected 1 for unknown opcode)"
 
 
 # ----------------------------------------------------------------------
