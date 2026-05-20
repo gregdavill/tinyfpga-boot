@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref so a fresh push doesn't queue
+# behind an outdated one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Synthesise + place & route the bootloader for the iCE40 LP8K
+  gateware:
+    name: Build gateware (iCE40 LP8K)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # Cache the /nix/store closure of the dev shell across runs, keyed on the locked flake.
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+
+      - name: Build bitstream + multiboot image
+        run: nix develop -c python build.py
+
+      - name: Upload bitstreams
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateware
+          path: |
+            build/top.bin
+            build/multiboot.bin
+          if-no-files-found: error
+
+  # End-to-end cocotb integration regressions:
+  integration:
+    name: cocotb integration regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+
+      - name: Run cocotb suite
+        run: nix develop -c bash -c 'cd sim && make'
+
+      - name: Upload functional-coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            sim/build/coverage_report.txt
+            sim/build/coverage_report.yaml
+          if-no-files-found: warn
+
+  # Block-level unit tests
+  blocks:
+    name: Block-level unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+
+      - name: Run block-level tests
+        run: >
+          nix develop -c python -m unittest -v
+          blocks.flash blocks.flash_uid blocks.ghostfat
+          blocks.qspi blocks.scsi blocks.uf2
