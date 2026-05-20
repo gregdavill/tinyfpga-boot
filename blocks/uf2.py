@@ -7,11 +7,12 @@ UF2_MAGIC_START0 = 0x0A324655
 UF2_MAGIC_START1 = 0x9E5D5157
 UF2_MAGIC_END    = 0x0AB16F30
 
+_stream_layout = data.StructLayout({"data": 8, "first": 1, "last": 1})
 
 class UF2Decoder(wiring.Component):
     def __init__(self):
         super().__init__({
-            "i": In(stream.Signature(data.StructLayout({"data": 8}))),
+            "i": In(stream.Signature(_stream_layout)),
             "o": Out(stream.Signature(data.StructLayout({"addr": 24, "data": 8}))),
             "error":     Out(1),
             "blockNo":   Out(32),

@@ -12,6 +12,7 @@ from blocks.usb_serialnumber import USBSerialNumberHandler
 from blocks.dfu import DFUHandler
 
 from blocks.scsi import SCSIHandler, MassStorageRequestHandler
+from blocks.uf2 import UF2Decoder
 from blocks.flash import QspiFlash
 
 
@@ -156,7 +157,8 @@ class Top(Elaboratable):
         usb.add_endpoint(in_ep)
 
         m.submodules.scsi = scsi = ResetInserter(usb.reset_detected | ms_handler.reset)(SCSIHandler(block_count=16 * 1024 * 1024 // 512, block_size=512))
-        # m.submodules.flash = QspiFlash()
+        m.submodules.uf2 = uf2 = UF2Decoder()
+        m.submodules.flash = flash = QspiFlash()
 
         wiring.connect(m, ep_out=out_ep.o, scsi=scsi.rx)
         wiring.connect(m, ep_in=in_ep.i, scsi=scsi.tx)
@@ -171,6 +173,11 @@ class Top(Elaboratable):
 
             with m.State('USB-CONNECT'):
                 m.d.comb += usb.connect.eq(1)
+
+                wiring.connect(m, scsi.write_stream, uf2.i)
+                wiring.connect(m, uf2.o, flash.i)
+                wiring.connect(m, flash.qo, qspi.i)
+                wiring.connect(m, flash.qi, qspi.o)
         
         
         # # TODO:: Connect DFUHanlder interface into QSPI/Flash controller
