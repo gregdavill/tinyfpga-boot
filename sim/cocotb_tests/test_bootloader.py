@@ -167,7 +167,7 @@ MS_REQUEST_GET_MAX_LUN = 0xFE
 
 # The bootloader relocates every UF2 write. A UF2 block targeting logical
 # address X lands at X + RELOAD_IMAGE_OFFSET in physical flash.
-RELOAD_IMAGE_OFFSET = 0x28000
+RELOAD_IMAGE_OFFSET = 0x40000
 
 def _phys(logical_addr: int) -> int:
     """Logical UF2 address → physical flash address (after relocation)."""

@@ -14,7 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from top import Top                       # noqa: E402
-from build import BoardConfig                    # noqa: E402
+from build import BoardConfig, SLOT1_OFFSET       # noqa: E402
 from sim.cocotb_platform import CocotbPlatform  # noqa: E402
 from sim import fsm_state_names                  # noqa: E402
 
@@ -80,7 +80,7 @@ def main():
         url="https://tinyfpga.com",
         scsi_vendor="TINYFPGA", scsi_product="UF2 Bootloader",
         reload_slot=1,
-        reload_image_offset=0x28000,
+        reload_image_offset=SLOT1_OFFSET,
         # ~85 µs at 12 MHz
         reload_idle_cycles=1000,
     )
