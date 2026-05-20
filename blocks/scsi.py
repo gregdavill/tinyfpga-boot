@@ -280,6 +280,12 @@ class SCSIHandler(wiring.Component):
                                 rom_offset.eq(base),
                                 rom_end.eq(base + length),
                             ]
+                            # Prime the ROM read port so rom[base] is
+                            # valid on the first SEND_RESPONSE cycle.
+                            m.d.comb += [
+                                rom_rp.addr.eq(base),
+                                rom_rp.en.eq(1),
+                            ]
                             m.next = "SEND_RESPONSE"
 
                     with m.Case(OP_READ_10):
@@ -511,6 +517,46 @@ class TestSCSIHandler(unittest.TestCase):
 
             tag, residue, status = await recv_csw(ctx, dut.tx)
             assert tag == 1
+            assert residue == 0
+            assert status == 0
+
+        simulate(dut, testbench)
+
+    def test_request_sense(self):
+        """REQUEST_SENSE returns the 18-byte fixed sense buffer.
+        """
+        dut = self._make_dut()
+
+        async def testbench(ctx):
+            cbw = make_cbw(tag=8, transfer_length=18, flags=0x80, cb_bytes=[OP_REQUEST_SENSE])
+            await send_cbw(ctx, dut.rx, cbw)
+
+            data = await recv_data(ctx, dut.tx, 18)
+            assert data[0] == 0x70, f"response code: {data[0]:#x} (want 0x70)"
+            assert data[7] == 10,   f"additional sense length: {data[7]} (want 10)"
+
+            tag, residue, status = await recv_csw(ctx, dut.tx)
+            assert tag == 8
+            assert residue == 0
+            assert status == 0
+
+        simulate(dut, testbench)
+
+    def test_mode_sense_6(self):
+        """MODE_SENSE(6) returns the 4-byte mode parameter header
+        (mode data length = 3).
+        """
+        dut = self._make_dut()
+
+        async def testbench(ctx):
+            cbw = make_cbw(tag=9, transfer_length=4, flags=0x80, cb_bytes=[OP_MODE_SENSE_6])
+            await send_cbw(ctx, dut.rx, cbw)
+
+            data = await recv_data(ctx, dut.tx, 4)
+            assert data[0] == 3, f"mode data length: {data[0]} (want 3)"
+
+            tag, residue, status = await recv_csw(ctx, dut.tx)
+            assert tag == 9
             assert residue == 0
             assert status == 0
 
