@@ -71,8 +71,7 @@ class UF2Decoder(wiring.Component):
                         with m.Case(31):
                             # All header fields latched; check flags
                             with m.If(flags & 0x0001):
-                                # "not main flash" flag set → skip block
-                                m.d.sync += self.error.eq(1)
+                                # "not main flash" flag set → skip the block.
                                 m.next = "DISCARD"
                             with m.Else():
                                 m.d.sync += data_count.eq(0)
@@ -126,7 +125,8 @@ class UF2Decoder(wiring.Component):
                     with m.If(byte_count == 511):
                         m.d.sync += byte_count.eq(0)
                         m.d.sync += accum.eq(0)
-                        m.d.sync += self.error.eq(0)
+                        # Do NOT clear `error` here. A bad start/inner
+                        # magic set it before we entered DISCARD.
                         m.next = "HEADER"
 
         # Transfer-level reset from upstream (SCSI).
@@ -226,12 +226,14 @@ class TestUF2Decoder(unittest.TestCase):
         self.assertEqual(self.output_count, 0, "no output should be produced for bad block")
 
     def test_not_main_flash_flag(self):
-        """A block with flags bit 0 set should be skipped (no output, error asserted)."""
+        """A block with flags bit 0 set should be skipped silently:
+        no output, and `error` stays low. 
+        """
         block = make_uf2_block(addr=0x3000, data_bytes=bytes(range(8)), flags=0x0001)
 
         simulate(self.dut, self.feed_blocks(block), self.monitor())
 
-        self.assertTrue(self.error_seen, "error should be asserted when not-main-flash flag is set")
+        self.assertFalse(self.error_seen, "not-main-flash is a clean skip, not an error")
         self.assertEqual(self.output_count, 0, "no output for skipped block")
 
     def test_done_signal(self):
