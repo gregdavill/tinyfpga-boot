@@ -10,7 +10,12 @@ UF2_MAGIC_END    = 0x0AB16F30
 _stream_layout = data.StructLayout({"data": 8, "first": 1, "last": 1})
 
 class UF2Decoder(wiring.Component):
-    def __init__(self):
+    def __init__(self, *, base_addr=0):
+        """`base_addr` relocates every block's target address into the
+        physical flash region of the slot we're flashing. The host's
+        UF2 file carries addresses relative to 0 (slot-agnostic);
+        """
+        self.base_addr = base_addr
         super().__init__({
             "i": In(stream.Signature(_stream_layout)),
             "o": Out(stream.Signature(data.StructLayout({"addr": 24, "data": 8}))),
@@ -61,7 +66,8 @@ class UF2Decoder(wiring.Component):
                         with m.Case(11):
                             m.d.sync += flags.eq(Cat(accum[8:], self.i.p.data))
                         with m.Case(15):
-                            m.d.sync += target_addr.eq(Cat(accum[8:], self.i.p.data))
+                            m.d.sync += target_addr.eq(
+                                Cat(accum[8:], self.i.p.data) + self.base_addr)
                         with m.Case(19):
                             m.d.sync += payload_size.eq(Cat(accum[8:], self.i.p.data))
                         with m.Case(23):
@@ -214,6 +220,33 @@ class TestUF2Decoder(unittest.TestCase):
             self.assertEqual(addr, 0x1000 + i, f"byte {i}: addr mismatch")
             self.assertEqual(d, payload[i], f"byte {i}: data mismatch")
         self.assertEqual(len(self.received), len(payload))
+
+    def test_base_addr_relocation(self):
+        """With a non-zero `base_addr`, output addresses are the UF2
+        block's target address plus the base
+        """
+        base = 0x28000
+        payload = bytes(range(16))
+        block = make_uf2_block(addr=0x1000, data_bytes=payload, block_no=0, num_blocks=1)
+        dut = UF2Decoder(base_addr=base)
+        received = []
+
+        async def checker(ctx):
+            for _ in range(len(payload)):
+                p = await stream_get(ctx, dut.o)
+                received.append((p["addr"], p["data"]))
+
+        async def feeder(ctx):
+            for b in block:
+                await stream_put(ctx, dut.i, {"data": b})
+            await ctx.tick().repeat(5)
+
+        simulate(dut, feeder, checker)
+
+        for i, (addr, d) in enumerate(received):
+            self.assertEqual(addr, base + 0x1000 + i, f"byte {i}: relocated addr mismatch")
+            self.assertEqual(d, payload[i], f"byte {i}: data mismatch")
+        self.assertEqual(len(received), len(payload))
 
     def test_bad_magic_start(self):
         """A block with corrupted magicStart0 should assert error and produce no output."""

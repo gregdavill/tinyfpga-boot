@@ -165,6 +165,14 @@ SCSI_WRITE_10        = 0x2A
 # Mass Storage class requests (bmRequestType bits 5..6 == class).
 MS_REQUEST_GET_MAX_LUN = 0xFE
 
+# The bootloader relocates every UF2 write. A UF2 block targeting logical
+# address X lands at X + RELOAD_IMAGE_OFFSET in physical flash.
+RELOAD_IMAGE_OFFSET = 0x28000
+
+def _phys(logical_addr: int) -> int:
+    """Logical UF2 address → physical flash address (after relocation)."""
+    return logical_addr + RELOAD_IMAGE_OFFSET
+
 
 def _build_cbw(*, tag: int, transfer_length: int, flags: int, cb: bytes) -> bytes:
     """31-byte Command Block Wrapper. `flags=0x00` → host-to-device."""
@@ -260,11 +268,11 @@ async def test_uf2_write_triggers_program(dut):
     program_ops = [t for t in flash.transactions if t.opcode in (0x02, 0x32)]
     assert program_ops, f"no page program observed (opcodes={[hex(o) for o in opcodes]})"
     programmed = program_ops[0]
-    assert programmed.address == target_addr, \
-        f"programmed at {programmed.address:#x}, expected {target_addr:#x}"
+    assert programmed.address == _phys(target_addr), \
+        f"programmed at {programmed.address:#x}, expected {_phys(target_addr):#x}"
 
     # And the bytes that landed in the flash model match the payload.
-    assert bytes(flash.memory[target_addr:target_addr + len(payload)]) == payload, \
+    assert bytes(flash.memory[_phys(target_addr):_phys(target_addr) + len(payload)]) == payload, \
         "flash memory contents do not match the UF2 payload"
 
 
@@ -339,21 +347,22 @@ async def test_uf2_multi_block_write(dut):
 
     program_ops = [t for t in flash.transactions if t.opcode in (0x02, 0x32)]
     program_addrs = [t.address for t in program_ops]
-    assert base_addr         in program_addrs, f"missing PP @ {base_addr:#x}: {program_addrs}"
-    assert base_addr + 0x100 in program_addrs, f"missing PP @ {base_addr+0x100:#x}: {program_addrs}"
+    assert _phys(base_addr)         in program_addrs, f"missing PP @ {_phys(base_addr):#x}: {program_addrs}"
+    assert _phys(base_addr + 0x100) in program_addrs, f"missing PP @ {_phys(base_addr+0x100):#x}: {program_addrs}"
 
-    assert bytes(flash.memory[base_addr:base_addr + 256]) == payload_0
-    assert bytes(flash.memory[base_addr + 256:base_addr + 512]) == payload_1
+    assert bytes(flash.memory[_phys(base_addr):_phys(base_addr) + 256]) == payload_0
+    assert bytes(flash.memory[_phys(base_addr) + 256:_phys(base_addr) + 512]) == payload_1
 
 
 @cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
 async def test_uf2_write_spans_sector_boundary(dut):
     """Write a single UF2 block whose payload straddles a 4 KiB flash
-    sector boundary. Target 0x0000_FF80, 256 bytes → 128 bytes in
-    sector 0x00F, 128 bytes in sector 0x010. Verify the QspiFlash
-    issues two separate WREN → sector-erase → page-program sequences
-    (one per sector touched), and that all 256 payload bytes land
-    contiguously in the flash model.
+    sector boundary. Logical target 0x0000_FF80, 256 bytes → after
+    relocation by RELOAD_IMAGE_OFFSET (sector-aligned) it still
+    straddles one 4 KiB sector boundary, 128 bytes either side.
+    Verify the QspiFlash issues two separate WREN → sector-erase →
+    page-program sequences (one per sector touched), and that all 256
+    payload bytes land contiguously in the flash model.
     """
     host, flash = await _bringup(dut)
     await host.set_address(0x12)
@@ -382,13 +391,16 @@ async def test_uf2_write_spans_sector_boundary(dut):
     # 256 bytes at ~2.67 µs/byte + two erases + WRENs + status polls.
     await Timer(2000, unit="us")
 
-    # Two sector erases, at the two sector-aligned addresses.
+    # Two sector erases, at the two (relocated) sector-aligned
+    # addresses straddled by the payload.
+    sect_lo = _phys(target_addr) & ~0xFFF
+    sect_hi = sect_lo + 0x1000
     erase_addrs = sorted(
         t.address for t in flash.transactions
         if t.opcode == 0x20 and t.address is not None
     )
-    assert erase_addrs == [0x00F000, 0x010000], \
-        f"unexpected sector erases: {[hex(a) for a in erase_addrs]}"
+    assert erase_addrs == [sect_lo, sect_hi], \
+        f"unexpected sector erases: {[hex(a) for a in erase_addrs]} (want {hex(sect_lo)}, {hex(sect_hi)})"
 
     # At least one page program per sector touched (could be more if
     # the flash controller splits at page boundaries within a sector).
@@ -396,14 +408,14 @@ async def test_uf2_write_spans_sector_boundary(dut):
         t.address for t in flash.transactions
         if t.opcode in (0x02, 0x32) and t.address is not None
     ]
-    assert any(0x00F000 <= a < 0x010000 for a in program_addrs), \
-        f"no page program in sector 0x00F: {[hex(a) for a in program_addrs]}"
-    assert any(0x010000 <= a < 0x011000 for a in program_addrs), \
-        f"no page program in sector 0x010: {[hex(a) for a in program_addrs]}"
+    assert any(sect_lo <= a < sect_hi for a in program_addrs), \
+        f"no page program in sector {hex(sect_lo)}: {[hex(a) for a in program_addrs]}"
+    assert any(sect_hi <= a < sect_hi + 0x1000 for a in program_addrs), \
+        f"no page program in sector {hex(sect_hi)}: {[hex(a) for a in program_addrs]}"
 
     # The whole 256-byte slab should land contiguously across the
     # sector boundary in the model.
-    assert bytes(flash.memory[target_addr:target_addr + 256]) == payload
+    assert bytes(flash.memory[_phys(target_addr):_phys(target_addr) + 256]) == payload
 
 
 @cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
@@ -1068,8 +1080,8 @@ async def test_uf2_write_with_slow_flash_wip_polling(dut):
         "exercise the WIP=1 retry loop"
     )
 
-    # Final state: data landed correctly in flash.
-    assert bytes(flash.memory[target_addr:target_addr + len(payload)]) == payload, \
+    # Final state: data landed correctly in flash (relocated region).
+    assert bytes(flash.memory[_phys(target_addr):_phys(target_addr) + len(payload)]) == payload, \
         "flash contents differ from UF2 payload"
 
 
@@ -1125,11 +1137,11 @@ async def test_uf2_random_blocks_land_in_flash(dut):
     # Wait for any tail flash activity to drain before reading memory.
     await Timer(2000, unit="us")
 
-    # Every block's payload must be present at its target address.
+    # Every block's payload must be present at its (relocated) address.
     for i, (target_addr, payload) in enumerate(blocks_under_test):
-        got = bytes(flash.memory[target_addr:target_addr + len(payload)])
+        got = bytes(flash.memory[_phys(target_addr):_phys(target_addr) + len(payload)])
         assert got == payload, (
-            f"block {i} @ {target_addr:#x}: flash contents differ "
+            f"block {i} @ {_phys(target_addr):#x}: flash contents differ "
             f"(first mismatch byte: {next((j for j, (a, b) in enumerate(zip(got, payload)) if a != b), '?')})"
         )
 

@@ -20,7 +20,10 @@ class BoardConfig:
 
     # SB_WARMBOOT slot to reload after a complete UF2 transfer
     reload_slot: int = 1
-
+    # Flash byte offset of the slot's image region. The host's UF2
+    # carries addresses relative to 0; the gateware adds this base so
+    # the image lands where SB_WARMBOOT(slot) will reconfigure from.
+    reload_image_offset: int = 0
     # Sync-domain cycles of quiet required before firing SB_WARMBOOT
     # (default ~50 ms at 12 MHz). None defers to the Warmboot block's 
     # own default
@@ -39,6 +42,8 @@ BOARDS = {
         url="https://tinyfpga.com",
         scsi_vendor="TINYFPGA",
         scsi_product="UF2 Bootloader",
+        reload_slot=1,
+        reload_image_offset=0x28000,
     ),
 }
 

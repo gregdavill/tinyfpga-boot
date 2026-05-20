@@ -169,8 +169,10 @@ class Top(Elaboratable):
                 model=self.config.model,
                 url=self.config.url,
             )
+        reload_image_offset = self.config.reload_image_offset if self.config else 0
+
         m.submodules.scsi = scsi = ResetInserter(usb.reset_detected | ms_handler.reset)(SCSIHandler(block_count=16 * 1024 * 1024 // 512, block_size=512, **scsi_kwargs))
-        m.submodules.uf2 = uf2 = UF2Decoder()
+        m.submodules.uf2 = uf2 = UF2Decoder(base_addr=reload_image_offset)
         m.submodules.flash = flash = QspiFlash()
 
         # Warm-reboot trigger: after a complete UF2 transfer

@@ -80,6 +80,7 @@ def main():
         url="https://tinyfpga.com",
         scsi_vendor="TINYFPGA", scsi_product="UF2 Bootloader",
         reload_slot=1,
+        reload_image_offset=0x28000,
         # ~85 µs at 12 MHz
         reload_idle_cycles=1000,
     )
