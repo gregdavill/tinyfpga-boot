@@ -18,19 +18,15 @@ from cocotb_coverage.coverage import (
 # Bins
 # ----------------------------------------------------------------------
 
-# Flash opcodes the bootloader actually issues. Tracking each as a
-# named bin so we can tell at a glance which paths each regression hit.
+# Flash opcodes the bootloader actually ISSUES on the wire. Tracking
+# each as a named bin so we can tell at a glance which paths each
+# regression hit.
 FLASH_OPCODES = {
     "READ_UID":         0x4B,
-    "FAST_READ":        0x0B,
-    "FAST_READ_QUAD":   0x6B,
     "PAGE_PROGRAM":     0x02,
-    "QUAD_PAGE_PROG":   0x32,
     "SECTOR_ERASE":     0x20,
     "READ_STATUS":      0x05,
     "WRITE_ENABLE":     0x06,
-    "WRITE_DISABLE":    0x04,
-    "RELEASE_PD":       0xAB,
 }
 
 # SCSI opcodes the device dispatches in scsi.py.
@@ -72,7 +68,9 @@ UF2_OUTCOMES = [
     "done_asserted",
 ]
 
-QSPI_LANES = [1, 2, 4]
+# The QSPI Controller supports 1x/2x/4x lane modes, but the
+# bootloader's flash controller only ever issues 1-lane (1-1-1) commands.
+QSPI_LANES = [1]
 
 
 # ----------------------------------------------------------------------
@@ -111,6 +109,17 @@ def cover_flash_opcode(opcode: int) -> None:
 @CoverCross(
     "top.scsi.opcode_x_dir",
     items=["top.scsi.opcode", "top.scsi.cbw_dir"],
+    # A SCSI command's data direction is fixed by its definition, so
+    # most (opcode x direction) cross-bins are logically impossible.
+    ign_bins=[
+        ("TEST_UNIT_READY", "device_to_host"),  # no data phase; CBW carries h2d default
+        ("REQUEST_SENSE",   "host_to_device"),  # returns sense data → d2h only
+        ("INQUIRY",         "host_to_device"),  # returns inquiry data → d2h only
+        ("MODE_SENSE_6",    "host_to_device"),  # returns mode page → d2h only
+        ("READ_CAPACITY",   "host_to_device"),  # returns capacity → d2h only
+        ("READ_10",         "host_to_device"),  # reads sectors → d2h only
+        ("WRITE_10",        "device_to_host"),  # writes sectors → h2d only
+    ],
 )
 def cover_cbw(opcode: int, dir_in: int) -> None:
     """Sampled by tests when they ship a CBW. Records the opcode,
