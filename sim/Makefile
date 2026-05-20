@@ -2,14 +2,14 @@
 #
 # Usage:
 #   python sim/elaborate.py   # one-time: regenerate build/sim_top.v
-#   make                       # run all cocotb test cases (icarus)
-#   make TESTCASE=test_enumeration
-#   make SIM=verilator         # untested but should drop in
+#   make                                       # run all cocotb tests (icarus)
+#   make COCOTB_TEST_FILTER=test_enumeration   # run one test (regex match)
+#   make SIM=verilator                         # untested but should drop in
 
 SIM      ?= icarus
 TOPLEVEL_LANG ?= verilog
 TOPLEVEL  := sim_top
-MODULE    := cocotb_tests.test_bootloader
+COCOTB_TEST_MODULES := cocotb_tests.test_bootloader
 
 # Default target — without this, the first user-defined target below
 # (the awk recipe for cells_sim_no_pll.v) wins and `make` exits without
