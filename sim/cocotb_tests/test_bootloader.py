@@ -21,10 +21,11 @@ DESC_STRING        = 0x03
 # implementation needs, but tight enough that a regression aborts in
 # seconds rather than minutes. Add `+timeout_unit="us"` to every
 # `@cocotb.test()` below.
-TIMEOUT_BOOT     =  200    # bring-up alone is ~60 µs
-TIMEOUT_DESC     =  500    # one GET_DESCRIPTOR
-TIMEOUT_ENUM     = 2_000   # full enumeration walk
-TIMEOUT_UF2      = 5_000   # SCSI + UF2 + page-program round-trip
+TIMEOUT_BOOT      =   200    # bring-up alone is ~60 µs
+TIMEOUT_DESC      =   500    # one GET_DESCRIPTOR
+TIMEOUT_ENUM      = 2_000    # full enumeration walk
+TIMEOUT_UF2       = 5_000    # one CBW + UF2 + page-program round-trip
+TIMEOUT_UF2_MULTI = 30_000   # multi-block UF2 write (3+ pages programmed)
 
 
 async def _bringup(dut, *, flash_uid: bytes = b"\xCA\xFE\xBA\xBE\xDE\xAD\xBE\xEF"):
@@ -246,6 +247,84 @@ async def test_uf2_write_triggers_program(dut):
     # And the bytes that landed in the flash model match the payload.
     assert bytes(flash.memory[target_addr:target_addr + len(payload)]) == payload, \
         "flash memory contents do not match the UF2 payload"
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_uf2_write_triggers_program_repeat(dut):
+    """Minimal back-to-back-write repro: re-run the same single-block
+    UF2 write as the previous test, to isolate whether the multi-block
+    failure is multi-block-specific or 'any UF2 write after the first'.
+    
+    """
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+    flash.transactions.clear()
+
+    target_addr = 0x0001_0000
+    payload     = bytes(range(256))
+    uf2_block   = _build_uf2_block(target_addr=target_addr, payload=payload)
+
+    lba = target_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 1, 0)
+    cbw = _build_cbw(tag=0xBEEF, transfer_length=512, flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=uf2_block)
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert status == 0, f"CSW status = {status}"
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2_MULTI, timeout_unit="us")
+async def test_uf2_multi_block_write(dut):
+    """Send two UF2 blocks back-to-back inside one SCSI WRITE-10
+    (transfer_length=1024) and verify both payloads land in flash and
+    `uf2.done` actually fires for the *last* block, not the first.
+    """
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+    flash.transactions.clear()
+
+    base_addr  = 0x0001_0000
+    payload_0  = bytes((i + 0xA0) & 0xFF for i in range(256))
+    payload_1  = bytes((i + 0xC0) & 0xFF for i in range(256))
+    block_0 = _build_uf2_block(target_addr=base_addr,         payload=payload_0,
+                               block_no=0, num_blocks=2)
+    block_1 = _build_uf2_block(target_addr=base_addr + 0x100, payload=payload_1,
+                               block_no=1, num_blocks=2)
+    blocks  = block_0 + block_1
+
+    lba = base_addr // 512
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, lba, 0, 2, 0)
+    cbw = _build_cbw(tag=0xCAFE0001, transfer_length=len(blocks),
+                     flags=0x00, cb=cdb)
+    _cov.cover_cbw(SCSI_WRITE_10, 0)
+    _cov.cover_uf2_outcome("multi_block")
+    _cov.cover_uf2_outcome("done_asserted")
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=blocks)
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE
+    assert tag == 0xCAFE0001
+    assert residue == 0, f"unexpected residue {residue}"
+    assert status == 0, f"CSW status = {status}"
+
+    await Timer(3000, unit="us")
+
+    program_ops = [t for t in flash.transactions if t.opcode in (0x02, 0x32)]
+    program_addrs = [t.address for t in program_ops]
+    assert base_addr         in program_addrs, f"missing PP @ {base_addr:#x}: {program_addrs}"
+    assert base_addr + 0x100 in program_addrs, f"missing PP @ {base_addr+0x100:#x}: {program_addrs}"
+
+    assert bytes(flash.memory[base_addr:base_addr + 256]) == payload_0
+    assert bytes(flash.memory[base_addr + 256:base_addr + 512]) == payload_1
 
 
 # ----------------------------------------------------------------------
