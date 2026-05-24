@@ -7,10 +7,7 @@ from luna.usb2               import USBDevice
 from blocks.luna_wrapper import USBStreamInEndpoint, USBStreamOutEndpoint
 
 from blocks.qspi import Controller
-from blocks.flash_uid import FlashUID
-from blocks.hex_encoder import HexNibbleEncoder
-from blocks.security_page import SecurityPage
-from blocks.json_key_parser import JsonStringKeyParser
+from blocks.serial_source import FlashUidSerialSource, SecurityPageSerialSource
 from blocks.usb.serial_handler import USBStreamSerialDescriptorHandler
 from blocks.dfu import DFUHandler
 
@@ -23,6 +20,52 @@ from blocks.warmboot import Warmboot
 class Top(Elaboratable):
     def __init__(self, config=None):
         self.config = config
+
+        # Build the descriptor set up front; this also stashes
+        # `self.descriptor_iSerialNumber`, needed by the serial handler.
+        self.descriptors = self.create_descriptors()
+
+        # --- Serial-number source (selected by config) ---
+        kind = config.serial_source if config else "flash_uid"
+        self.serial_source = {
+            "security_page": SecurityPageSerialSource(),
+            "flash_uid":     FlashUidSerialSource(),
+        }[kind]
+        self.serial_handler = USBStreamSerialDescriptorHandler(
+            self.descriptor_iSerialNumber, max_len=self.serial_source.max_len)
+
+        # --- Control-endpoint request handlers ---
+        self.ms_handler = MassStorageRequestHandler(if_num=0)
+
+        # --- Bulk data endpoints (EP1 OUT/IN) ---
+        self.out_ep = USBStreamOutEndpoint(endpoint_number=1, max_packet_size=64)
+        self.in_ep  = USBStreamInEndpoint(endpoint_number=1, max_packet_size=64)
+
+        # --- Mass-storage / UF2 write path ---
+        scsi_kwargs = {}
+        if config:
+            scsi_kwargs = dict(
+                scsi_vendor=config.scsi_vendor,
+                scsi_product=config.scsi_product,
+                board_id=config.board_id,
+                model=config.model,
+                url=config.url,
+            )
+        self.scsi = SCSIHandler(block_count=16 * 1024 * 1024 // 512,
+                                block_size=512, **scsi_kwargs)
+        self.uf2 = UF2Decoder(
+            base_addr=config.reload_image_offset if config else 0)
+        self.flash = QspiFlash()
+
+        # Warm-reboot trigger after a complete UF2 transfer.
+        reload_slot = config.reload_slot if config else 1
+        reload_idle = (
+            config.reload_idle_cycles
+            if (config and config.reload_idle_cycles is not None)
+            else 600_000
+        )
+        self.warmboot = Warmboot(idle_threshold_cycles=reload_idle,
+                                 slot=reload_slot)
 
     def create_descriptors(self):
         """ Create the descriptors we want to use for our device. """
@@ -127,95 +170,37 @@ class Top(Elaboratable):
 
         self.create_clocks(m, platform)
 
-        # Create our USB device interface...
         usb_direct_io = platform.request('usb')
         m.submodules.usb = usb = DomainRenamer({'usb':'sync'})(USBDevice(bus=usb_direct_io))
         m.submodules.qspi = qspi = Controller(platform.request('spi_flash_4x', dir='-'), chip_count=1, offset=0)
 
-        descriptors = self.create_descriptors()
-        serial_source = self.config.serial_source if self.config else "flash_uid"
-
-        # The serial number is the ASCII output of a boot-time flash read,
-        # selected by config (see BoardConfig.serial_source). Both options
-        # feed the same byte-stream serial handler:
-        #   - "flash_uid":     64-bit Read-Unique-ID, hex-encoded.
-        #     FlashUID -> HexNibbleEncoder -> handler
-        #   - "security_page": board `uuid` text parsed out of the JSON
-        #     security page, served verbatim.
-        #     SecurityPage -> JsonStringKeyParser -> handler
-        if serial_source == "security_page":
-            m.submodules.security = security = SecurityPage()
-            m.submodules.keyparser = keyparser = JsonStringKeyParser(key=b"uuid")
-            # parser `done` stops the page read once the value is captured.
-            m.d.comb += security.abort.eq(keyparser.done)
-            wiring.connect(m, security.data, keyparser.i)
-            serial_stream = keyparser.o
-            serial_max_len = 36                      # canonical UUID length
-        else:
-            m.submodules.uuid = uuid = FlashUID()
-            m.submodules.hexenc = hexenc = HexNibbleEncoder()
-            wiring.connect(m, uuid.data, hexenc.i)
-            serial_stream = hexenc.o
-            serial_max_len = 16                      # 8 UID bytes -> 16 hex chars
-
-        handler = USBStreamSerialDescriptorHandler(
-            self.descriptor_iSerialNumber, max_len=serial_max_len)
-
-        ms_handler = MassStorageRequestHandler(if_num=0)
+        m.submodules.serial_source = ss = self.serial_source
 
         # Add our standard control endpoint to the device.
-        ep = usb.add_standard_control_endpoint(descriptors, skiplist=[handler.handler_condition])
-
-        ep.add_request_handler(handler)
-        ep.add_request_handler(ms_handler)
+        ep = usb.add_standard_control_endpoint(
+            self.descriptors, skiplist=[self.serial_handler.handler_condition])
+        ep.add_request_handler(self.serial_handler)
+        ep.add_request_handler(self.ms_handler)
         m.d.comb += [
             qspi.divisor.eq(4),
-            # Feed the selected serial source's byte stream into the handler.
-            handler.serial_data.eq(serial_stream.p.data),
-            handler.serial_valid.eq(serial_stream.valid),
-            serial_stream.ready.eq(handler.serial_ready),
+            # Feed the serial source's ASCII byte stream into the handler.
+            self.serial_handler.serial_data.eq(ss.data.p.data),
+            self.serial_handler.serial_valid.eq(ss.data.valid),
+            ss.data.ready.eq(self.serial_handler.serial_ready),
         ]
 
-        # Add a stream endpoint to our device.
-        out_ep = USBStreamOutEndpoint(
-            endpoint_number=1,
-            max_packet_size=64,
-        )
-        usb.add_endpoint(out_ep)
+        # Bulk data endpoints.
+        usb.add_endpoint(self.out_ep)
+        usb.add_endpoint(self.in_ep)
 
-        # Add a stream endpoint to our device.
-        in_ep = USBStreamInEndpoint(
-            endpoint_number=1,
-            max_packet_size=64
-        )
-        usb.add_endpoint(in_ep)
+        # Mass-storage / UF2 write path. SCSI and Warmboot are reset on a
+        # USB bus reset (and SCSI also on a Mass-Storage class reset); a
+        # bus reset mid-upload cancels any pending reload.
+        m.submodules.scsi = scsi = ResetInserter(usb.reset_detected | self.ms_handler.reset)(self.scsi)
+        m.submodules.uf2 = uf2 = self.uf2
+        m.submodules.flash = flash = self.flash
+        m.submodules.warmboot = warmboot = ResetInserter(usb.reset_detected)(self.warmboot)
 
-        scsi_kwargs = {}
-        if self.config:
-            scsi_kwargs = dict(
-                scsi_vendor=self.config.scsi_vendor,
-                scsi_product=self.config.scsi_product,
-                board_id=self.config.board_id,
-                model=self.config.model,
-                url=self.config.url,
-            )
-        reload_image_offset = self.config.reload_image_offset if self.config else 0
-
-        m.submodules.scsi = scsi = ResetInserter(usb.reset_detected | ms_handler.reset)(SCSIHandler(block_count=16 * 1024 * 1024 // 512, block_size=512, **scsi_kwargs))
-        m.submodules.uf2 = uf2 = UF2Decoder(base_addr=reload_image_offset)
-        m.submodules.flash = flash = QspiFlash()
-
-        # Warm-reboot trigger: after a complete UF2 transfer
-        reload_slot = self.config.reload_slot if self.config else 1
-        reload_idle = (
-            self.config.reload_idle_cycles
-            if (self.config and self.config.reload_idle_cycles is not None)
-            else 600_000
-        )
-        # A bus reset mid-upload cancels any pending reload.
-        m.submodules.warmboot = warmboot = ResetInserter(usb.reset_detected)(
-            Warmboot(idle_threshold_cycles=reload_idle, slot=reload_slot)
-        )
         m.d.comb += [
             warmboot.arm.eq(uf2.done),
             # Any of these high means the device is mid-transaction
@@ -223,25 +208,18 @@ class Top(Elaboratable):
             warmboot.activity.eq(scsi.rx.valid | scsi.tx.valid | flash.qo.valid),
         ]
 
-        wiring.connect(m, ep_out=out_ep.o, scsi=scsi.rx)
-        wiring.connect(m, ep_in=in_ep.i, scsi=scsi.tx)
+        wiring.connect(m, ep_out=self.out_ep.o, scsi=scsi.rx)
+        wiring.connect(m, ep_in=self.in_ep.i, scsi=scsi.tx)
 
         with m.FSM():
             with m.State('BOOT-READ'):
                 # Read the serial source over QSPI before USB comes up,
                 # then hand the bus over to the flash write path.
-                if serial_source == "security_page":
-                    wiring.connect(m, security.o, qspi.i)
-                    wiring.connect(m, security.i, qspi.o)
-                    m.d.comb += security.req.eq(1)
-                    with m.If(security.done):
-                        m.next = 'USB-CONNECT'
-                else:
-                    wiring.connect(m, uuid.o, qspi.i)
-                    wiring.connect(m, uuid.i, qspi.o)
-                    m.d.comb += uuid.req.eq(1)
-                    with m.If(uuid.done):
-                        m.next = 'USB-CONNECT'
+                wiring.connect(m, ss.o, qspi.i)
+                wiring.connect(m, ss.i, qspi.o)
+                m.d.comb += ss.req.eq(1)
+                with m.If(ss.done):
+                    m.next = 'USB-CONNECT'
 
             with m.State('USB-CONNECT'):
                 m.d.comb += usb.connect.eq(1)
