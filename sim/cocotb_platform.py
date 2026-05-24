@@ -10,11 +10,12 @@ port list.
 
 from amaranth.build.res import PortGroup
 from amaranth.lib import io
-from amaranth_boards.tinyfpga_bx import TinyFPGABXPlatform
+from platforms import TinyFPGABXPlatform
 
 
 class CocotbPlatform(TinyFPGABXPlatform):
-    """Sim-friendly view of the TinyFPGA BX platform."""
+    """Sim-friendly view of the TinyFPGA BX platform (inherits the project
+    platform's clock/reset generation)."""
 
     toolchain = None
 

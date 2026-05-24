@@ -1240,7 +1240,7 @@ async def test_warmboot_pulses_after_complete_uf2_transfer(dut):
     for _ in range(2500):
         await Timer(1, unit="us")
         try:
-            if int(dut.warmboot.boot.value) == 1:
+            if int(dut.reconfigure.boot.value) == 1:
                 boot_seen = True
                 break
         except (AttributeError, ValueError):
@@ -1276,7 +1276,7 @@ async def test_warmboot_does_not_pulse_without_uf2_done(dut):
     for _ in range(500):
         await Timer(1, unit="us")
         try:
-            assert int(dut.warmboot.boot.value) == 0, (
+            assert int(dut.reconfigure.boot.value) == 0, (
                 "SB_WARMBOOT.BOOT fired without a preceding UF2 transfer"
             )
         except (AttributeError, ValueError):

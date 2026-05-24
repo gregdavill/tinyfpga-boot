@@ -16,7 +16,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from top import Top                       # noqa: E402
-from build import BoardConfig, SLOT1_OFFSET       # noqa: E402
+from config import BoardConfig, SerialSource, SLOT1_OFFSET  # noqa: E402
 from sim.cocotb_platform import CocotbPlatform  # noqa: E402
 from sim import fsm_state_names                  # noqa: E402
 
@@ -86,13 +86,14 @@ def main():
     # idle window so the BOOT pulse fires inside our per-test sim-time
     # budget. Hardware builds use the platform defaults ~50 ms.
     sim_config = BoardConfig(
-        platform="tinyfpga_bx",
+        name="sim",
+        platform=CocotbPlatform,
         vid=0x1209, pid=0x5AF0,
         manufacturer="TinyFPGA", product="Bootloader",
         board_id="TinyFPGA-BX-v1", model="TinyFPGA BX",
         url="https://tinyfpga.com",
         scsi_vendor="TINYFPGA", scsi_product="UF2 Bootloader",
-        serial_source=args.serial_source,
+        serial_source=SerialSource(args.serial_source),
         reload_slot=1,
         reload_image_offset=SLOT1_OFFSET,
         # ~85 µs at 12 MHz
