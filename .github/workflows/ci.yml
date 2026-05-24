@@ -12,9 +12,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Build the dev shell once and populate the store cache, so the jobs
+  # below (which `needs:` this) restore it instead of each rebuilding it
+  # from scratch in parallel on a cold cache.
+  setup:
+    name: Warm Nix cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-nix
+      - run: nix develop -c true   # realise the dev shell into /nix/store
+
   # Synthesise + place & route each board's bitstream.
   gateware:
     name: Build gateware (${{ matrix.board }})
+    needs: setup
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -37,6 +49,7 @@ jobs:
   # End-to-end cocotb integration regressions (both serial sources).
   integration:
     name: cocotb integration regressions
+    needs: setup
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +70,7 @@ jobs:
   # Block-level unit tests.
   blocks:
     name: Block-level unit tests
+    needs: setup
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
