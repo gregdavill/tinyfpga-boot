@@ -10,8 +10,8 @@ runs:
 
     # Cache the /nix/store closure of the dev shell across runs, keyed on
     # the locked flake.
-    - uses: nix-community/cache-nix-action@v6
+    - uses: nix-community/cache-nix-action@v7
       with:
-        primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-        restore-prefixes-first-match: nix-${{ runner.os }}-
+        primary-key: nix-v7-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+        restore-prefixes-first-match: nix-v7-${{ runner.os }}-
         gc-max-store-size-linux: 5G
