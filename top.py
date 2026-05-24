@@ -21,6 +21,7 @@ class Top(Elaboratable):
     def __init__(self, config=None):
         self.config = config
 
+        hs = bool(config) and config.platform.usb_phy == "ulpi_hs"
 
         # --- Serial-number source (selected by config) ---
         kind = config.serial_source if config else SerialSource.FLASH_UID
@@ -28,6 +29,14 @@ class Top(Elaboratable):
             SerialSource.SECURITY_PAGE: SecurityPageSerialSource,
             SerialSource.FLASH_UID:     FlashUidSerialSource,
         }[kind]()
+
+        # --- USB descriptors, serial handler, bulk endpoints ---
+        self.descriptors = self.create_descriptors(hs)
+        self.serial_handler = USBStreamSerialDescriptorHandler(
+            self.descriptor_iSerialNumber, max_len=self.serial_source.max_len)
+        mps = 512 if hs else 64
+        self.out_ep = USBStreamOutEndpoint(endpoint_number=1, max_packet_size=mps)
+        self.in_ep  = USBStreamInEndpoint(endpoint_number=1, max_packet_size=mps)
 
         # --- Control-endpoint request handler ---
         self.ms_handler = MassStorageRequestHandler(if_num=0)
@@ -107,15 +116,6 @@ class Top(Elaboratable):
         usb_bus = platform.request(platform.default_usb_connection)
         m.submodules.usb = usb = DomainRenamer({'usb':'sync'})(USBDevice(bus=usb_bus))
 
-        # USB descriptors, endpoints and the serial handler — their bulk
-        # packet size (512 HS / 64 FS) depends on platform.is_hs.
-        descriptors = self.create_descriptors(hs=platform.is_hs)
-        mps = 512 if platform.is_hs else 64
-        out_ep = USBStreamOutEndpoint(endpoint_number=1, max_packet_size=mps)
-        in_ep  = USBStreamInEndpoint(endpoint_number=1, max_packet_size=mps)
-        serial_handler = USBStreamSerialDescriptorHandler(
-            self.descriptor_iSerialNumber, max_len=self.serial_source.max_len)
-
         # QSPI flash; the clock routing is platform-specific.
         if platform.flash_clk == "usrmclk":
             # ECP5 only: the flash clock is the dedicated config MCLK,
@@ -138,20 +138,20 @@ class Top(Elaboratable):
 
         # Add our standard control endpoint to the device.
         ep = usb.add_standard_control_endpoint(
-            descriptors, skiplist=[serial_handler.handler_condition])
-        ep.add_request_handler(serial_handler)
+            self.descriptors, skiplist=[self.serial_handler.handler_condition])
+        ep.add_request_handler(self.serial_handler)
         ep.add_request_handler(self.ms_handler)
         m.d.comb += [
             qspi.divisor.eq(4),
             # Feed the serial source's ASCII byte stream into the handler.
-            serial_handler.serial_data.eq(ss.data.p.data),
-            serial_handler.serial_valid.eq(ss.data.valid),
-            ss.data.ready.eq(serial_handler.serial_ready),
+            self.serial_handler.serial_data.eq(ss.data.p.data),
+            self.serial_handler.serial_valid.eq(ss.data.valid),
+            ss.data.ready.eq(self.serial_handler.serial_ready),
         ]
 
         # Bulk data endpoints.
-        usb.add_endpoint(out_ep)
-        usb.add_endpoint(in_ep)
+        usb.add_endpoint(self.out_ep)
+        usb.add_endpoint(self.in_ep)
 
         # Mass-storage / UF2 write path. SCSI is reset on a USB bus reset
         # (and a Mass-Storage class reset).
@@ -177,8 +177,8 @@ class Top(Elaboratable):
             idle_cycles=reload_idle,
         )
 
-        wiring.connect(m, ep_out=out_ep.o, scsi=scsi.rx)
-        wiring.connect(m, ep_in=in_ep.i, scsi=scsi.tx)
+        wiring.connect(m, ep_out=self.out_ep.o, scsi=scsi.rx)
+        wiring.connect(m, ep_in=self.in_ep.i, scsi=scsi.tx)
 
         with m.FSM():
             with m.State('BOOT-READ'):
