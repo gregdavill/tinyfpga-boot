@@ -8,7 +8,10 @@ from blocks.luna_wrapper import USBStreamInEndpoint, USBStreamOutEndpoint
 
 from blocks.qspi import Controller
 from blocks.flash_uid import FlashUID
-from blocks.usb.serial_handler import USBRuntimeSerialDescriptorHandler
+from blocks.hex_encoder import HexNibbleEncoder
+from blocks.security_page import SecurityPage
+from blocks.json_key_parser import JsonStringKeyParser
+from blocks.usb.serial_handler import USBStreamSerialDescriptorHandler
 from blocks.dfu import DFUHandler
 
 from blocks.scsi import SCSIHandler, MassStorageRequestHandler
@@ -128,12 +131,36 @@ class Top(Elaboratable):
         usb_direct_io = platform.request('usb')
         m.submodules.usb = usb = DomainRenamer({'usb':'sync'})(USBDevice(bus=usb_direct_io))
         m.submodules.qspi = qspi = Controller(platform.request('spi_flash_4x', dir='-'), chip_count=1, offset=0)
-        m.submodules.uuid = uuid = FlashUID()
 
-        # Connect UUID to serial number
         descriptors = self.create_descriptors()
-        handler = USBRuntimeSerialDescriptorHandler(self.descriptor_iSerialNumber, len(uuid.uuid))
-        
+        serial_source = self.config.serial_source if self.config else "flash_uid"
+
+        # The serial number is the ASCII output of a boot-time flash read,
+        # selected by config (see BoardConfig.serial_source). Both options
+        # feed the same byte-stream serial handler:
+        #   - "flash_uid":     64-bit Read-Unique-ID, hex-encoded.
+        #     FlashUID -> HexNibbleEncoder -> handler
+        #   - "security_page": board `uuid` text parsed out of the JSON
+        #     security page, served verbatim.
+        #     SecurityPage -> JsonStringKeyParser -> handler
+        if serial_source == "security_page":
+            m.submodules.security = security = SecurityPage()
+            m.submodules.keyparser = keyparser = JsonStringKeyParser(key=b"uuid")
+            # parser `done` stops the page read once the value is captured.
+            m.d.comb += security.abort.eq(keyparser.done)
+            wiring.connect(m, security.data, keyparser.i)
+            serial_stream = keyparser.o
+            serial_max_len = 36                      # canonical UUID length
+        else:
+            m.submodules.uuid = uuid = FlashUID()
+            m.submodules.hexenc = hexenc = HexNibbleEncoder()
+            wiring.connect(m, uuid.data, hexenc.i)
+            serial_stream = hexenc.o
+            serial_max_len = 16                      # 8 UID bytes -> 16 hex chars
+
+        handler = USBStreamSerialDescriptorHandler(
+            self.descriptor_iSerialNumber, max_len=serial_max_len)
+
         ms_handler = MassStorageRequestHandler(if_num=0)
 
         # Add our standard control endpoint to the device.
@@ -143,7 +170,10 @@ class Top(Elaboratable):
         ep.add_request_handler(ms_handler)
         m.d.comb += [
             qspi.divisor.eq(4),
-            handler.serial.eq(uuid.uuid),
+            # Feed the selected serial source's byte stream into the handler.
+            handler.serial_data.eq(serial_stream.p.data),
+            handler.serial_valid.eq(serial_stream.valid),
+            serial_stream.ready.eq(handler.serial_ready),
         ]
 
         # Add a stream endpoint to our device.
@@ -197,12 +227,21 @@ class Top(Elaboratable):
         wiring.connect(m, ep_in=in_ep.i, scsi=scsi.tx)
 
         with m.FSM():
-            with m.State('UUID'):
-                wiring.connect(m, uuid.o, qspi.i)
-                wiring.connect(m, uuid.i, qspi.o)
-                m.d.comb += uuid.req.eq(1)
-                with m.If(uuid.valid):
-                    m.next = 'USB-CONNECT'
+            with m.State('BOOT-READ'):
+                # Read the serial source over QSPI before USB comes up,
+                # then hand the bus over to the flash write path.
+                if serial_source == "security_page":
+                    wiring.connect(m, security.o, qspi.i)
+                    wiring.connect(m, security.i, qspi.o)
+                    m.d.comb += security.req.eq(1)
+                    with m.If(security.done):
+                        m.next = 'USB-CONNECT'
+                else:
+                    wiring.connect(m, uuid.o, qspi.i)
+                    wiring.connect(m, uuid.i, qspi.o)
+                    m.d.comb += uuid.req.eq(1)
+                    with m.If(uuid.done):
+                        m.next = 'USB-CONNECT'
 
             with m.State('USB-CONNECT'):
                 m.d.comb += usb.connect.eq(1)

@@ -30,6 +30,13 @@ class BoardConfig:
     scsi_vendor: str
     scsi_product: str
 
+    # Source of the USB serial number:
+    #   "flash_uid"     - the flash's 64-bit Read-Unique-ID, rendered as
+    #                     hex (the original behaviour).
+    #   "security_page" - the board `uuid` text parsed out of the flash
+    #                     security page, served verbatim as ASCII.
+    serial_source: str = "flash_uid"
+
     # SB_WARMBOOT slot to reload after a complete UF2 transfer
     reload_slot: int = 1
     # Flash byte offset of the slot's image region. The host's UF2
@@ -54,6 +61,7 @@ BOARDS = {
         url="https://tinyfpga.com",
         scsi_vendor="TINYFPGA",
         scsi_product="UF2 Bootloader",
+        serial_source="security_page",
         reload_slot=1,
         reload_image_offset=SLOT1_OFFSET,
     ),

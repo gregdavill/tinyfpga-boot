@@ -3,6 +3,7 @@
 Implements only the opcodes the bootloader issues:
 
 * 0x4B  Read Unique ID Number     (sent by `FlashUID` on boot)
+* 0x48  Read Security Registers   (sent by `SecurityPage` on boot)
 * 0x06  Write Enable              (UF2 write path)
 * 0x05  Read Status Register      (poll WIP)
 * 0x02  Page Program (1-1-1)
@@ -89,10 +90,17 @@ class SPIFlashModel:
 
     def __init__(self, dut, *, size: int = 16 * 1024 * 1024,
                  uid: bytes = b"\xCA\xFE\xBA\xBE\xDE\xAD\xBE\xEF",
+                 security_data: bytes = (
+                     b'{"boardmeta": {"name": "TinyFPGA BX", '
+                     b'"uuid": "CAFEBABE-DEAD-BEEF-0123-456789ABCDEF"}}'),
                  wip_polls_after_write: int = 0):
         """`wip_polls_after_write` simulates a flash that holds WIP=1 for
         N status reads after each page-program or sector-erase before
         clearing.
+
+        `security_data` is the byte blob returned by the Read Security
+        Registers (0x48) command — the JSON the `SecurityPage` block
+        scans for the board `uuid`.
         """
         assert len(uid) == 8
         self.dut    = dut
@@ -100,6 +108,7 @@ class SPIFlashModel:
         self.size   = size
         self.memory = bytearray(b"\xFF" * size)
         self.uid    = uid
+        self.security_data = security_data
         self._cs_idle   = 1
         self._cs_active = 0
         self.transactions: list[FlashTransaction] = []
@@ -148,6 +157,8 @@ class SPIFlashModel:
         try:
             if tx.opcode == 0x4B:
                 await self._cmd_read_uid(tx, cs_idle)
+            elif tx.opcode == 0x48:
+                await self._cmd_read_security_register(tx, cs_idle)
             elif tx.opcode == 0x06:
                 self.status |= 0x02        # WEL
                 tx.read_data = b""
@@ -184,6 +195,28 @@ class SPIFlashModel:
         await self._shift_out(self.uid, lanes=1)
         tx.read_data = self.uid
         await cs_idle
+
+    async def _cmd_read_security_register(self, tx: FlashTransaction, cs_idle):
+        # 0x48 [3 address bytes] [1 dummy byte] [security data out ...]
+        addr_bytes = await self._shift_in_bytes(3, lanes=1)
+        addr = (addr_bytes[0] << 16) | (addr_bytes[1] << 8) | addr_bytes[2]
+        tx.address = addr
+        await self._shift_in(8, lanes=1)        # 1 dummy byte
+        out = bytearray()
+
+        async def stream():
+            i = 0
+            data = self.security_data
+            while True:
+                byte = data[i] if i < len(data) else 0xFF
+                await self._shift_out(bytes([byte]), lanes=1)
+                out.append(byte)
+                i += 1
+
+        task = cocotb.start_soon(stream())
+        await cs_idle
+        task.cancel()
+        tx.read_data = bytes(out)
 
     async def _cmd_read_status(self, tx: FlashTransaction, cs_idle):
         # Drive status until CS# rises (host may clock as many bytes as it wants).

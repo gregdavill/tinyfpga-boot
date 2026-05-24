@@ -9,7 +9,20 @@
 SIM      ?= icarus
 TOPLEVEL_LANG ?= verilog
 TOPLEVEL  := sim_top
-COCOTB_TEST_MODULES := cocotb_tests.test_bootloader
+
+# Which serial source the DUT is elaborated with (see BoardConfig).
+# The default (flash_uid) keeps the original build/sim_top.v paths; the
+# security_page variant gets suffixed paths so the two don't clobber.
+SERIAL_SOURCE ?= flash_uid
+ifeq ($(SERIAL_SOURCE),flash_uid)
+COCOTB_TEST_MODULES ?= cocotb_tests.test_bootloader
+SIM_TOP_V := $(PWD)/build/sim_top.v
+SIM_BUILD := $(PWD)/build/sim_$(SIM)
+else
+COCOTB_TEST_MODULES ?= cocotb_tests.test_security_serial
+SIM_TOP_V := $(PWD)/build/sim_top_$(SERIAL_SOURCE).v
+SIM_BUILD := $(PWD)/build/sim_$(SIM)_$(SERIAL_SOURCE)
+endif
 
 # Default target — without this, the first user-defined target below
 # (the awk recipe for cells_sim_no_pll.v) wins and `make` exits without
@@ -43,7 +56,7 @@ $(PWD)/build:
 	mkdir -p $@
 
 VERILOG_SOURCES := \
-	$(PWD)/build/sim_top.v \
+	$(SIM_TOP_V) \
 	$(PWD)/ice40_pll_sim.v \
 	$(CELLS_SIM_NO_PLL)
 
@@ -55,7 +68,6 @@ VERILOG_SOURCES += $(PWD)/dump_flush.v
 COMPILE_ARGS    += -s dump_flush
 endif
 COCOTB_RESULTS_FILE := $(PWD)/build/results.xml
-SIM_BUILD := $(PWD)/build/sim_$(SIM)
 
 # Wrap iverilog so we can filter out the high-volume "sorry: constant
 # selects in always_* processes" notices (an iverilog 13 limitation
@@ -69,9 +81,12 @@ CMD := $(PWD)/iverilog_quiet.sh
 # the outer one. cocotb's Makefile.sim handles that via TOPLEVEL above.
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-# Convenience: emit Verilog as part of `make`.
-$(PWD)/build/sim_top.v: elaborate.py cocotb_platform.py ../top.py
-	python elaborate.py
+# Convenience: emit Verilog as part of `make`. The blocks that feed the
+# serial source are prerequisites so a change re-elaborates the DUT.
+$(SIM_TOP_V): elaborate.py cocotb_platform.py ../top.py \
+		../blocks/security_page.py ../blocks/json_key_parser.py \
+		../blocks/usb/serial_handler.py | $(PWD)/build
+	python elaborate.py --serial-source $(SERIAL_SOURCE) --out $@
 
 clean::
 	rm -rf build

@@ -1,6 +1,8 @@
 """Emit `build/sim_top.v` from `Top` for cocotb.
 """
 
+import argparse
+import os
 import pathlib
 import sys
 
@@ -67,6 +69,17 @@ def emit(platform, design, *, name: str = "sim_top", emit_src: bool = False) -> 
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Emit sim_top.v for cocotb")
+    parser.add_argument(
+        "--serial-source",
+        default=os.environ.get("SERIAL_SOURCE", "flash_uid"),
+        choices=["flash_uid", "security_page"],
+        help="USB serial source baked into the DUT (default: flash_uid)",
+    )
+    parser.add_argument("--out", default=None,
+                        help="output Verilog path (default: sim/build/sim_top.v)")
+    args = parser.parse_args()
+
     platform = CocotbPlatform()
 
     # Use a sim-only config that mostly just shortens the warmboot
@@ -79,6 +92,7 @@ def main():
         board_id="TinyFPGA-BX-v1", model="TinyFPGA BX",
         url="https://tinyfpga.com",
         scsi_vendor="TINYFPGA", scsi_product="UF2 Bootloader",
+        serial_source=args.serial_source,
         reload_slot=1,
         reload_image_offset=SLOT1_OFFSET,
         # ~85 µs at 12 MHz
@@ -88,11 +102,10 @@ def main():
 
     text = emit(platform, top)
 
-    out_dir = ROOT / "sim" / "build"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "sim_top.v"
+    out_path = pathlib.Path(args.out) if args.out else ROOT / "sim" / "build" / "sim_top.v"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text)
-    print(f"wrote {out_path} ({len(text)} bytes)")
+    print(f"wrote {out_path} (serial_source={args.serial_source}, {len(text)} bytes)")
 
 
 if __name__ == "__main__":

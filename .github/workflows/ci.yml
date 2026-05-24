@@ -62,8 +62,11 @@ jobs:
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 5G
 
-      - name: Run cocotb suite
+      - name: Run cocotb suite (flash_uid serial)
         run: nix develop -c bash -c 'cd sim && make'
+
+      - name: Run cocotb suite (security_page serial)
+        run: nix develop -c bash -c 'cd sim && make SERIAL_SOURCE=security_page'
 
       - name: Upload functional-coverage report
         if: always()
@@ -98,3 +101,4 @@ jobs:
           nix develop -c python -m unittest -v
           blocks.flash blocks.flash_uid blocks.ghostfat
           blocks.qspi blocks.scsi blocks.uf2
+          blocks.security_page blocks.json_key_parser blocks.hex_encoder
