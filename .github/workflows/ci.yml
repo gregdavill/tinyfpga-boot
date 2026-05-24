@@ -72,6 +72,36 @@ jobs:
           path: |
             build/top.bit
           if-no-files-found: error
+  
+  # Synthesise + place & route the bootloader for the ECP5
+  gateware_ecpbreaker:
+    name: Build gateware (ECP5 25k)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # Cache the /nix/store closure of the dev shell across runs, keyed on the locked flake.
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+
+      - name: Build bitstream + multiboot image
+        run: nix develop -c python build.py --board ecpbreaker
+
+      - name: Upload bitstreams
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateware_ecpbreaker
+          path: |
+            build/top.bit
+          if-no-files-found: error
 
   # End-to-end cocotb integration regressions:
   integration:
