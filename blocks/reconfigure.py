@@ -76,13 +76,9 @@ class OpenDrainReconfigure(SystemReconfigure):
         fire = pending & (idle_cnt == self._idle_cycles)
         m.d.comb += self.boot.eq(fire)
 
-        # Open-drain: hold the pin low (o=0, oe asserted) to reconfigure,
-        # release to hi-Z otherwise.
-        port = platform.request("reconfigure", dir="-")
-        m.submodules.buffer = buffer = io.Buffer("io", port)
+        port = platform.request("reconfigure", dir="o")
         m.d.comb += [
-            buffer.o.eq(0),
-            buffer.oe.eq(fire),
+            port.o.eq(fire),
         ]
 
         return m
