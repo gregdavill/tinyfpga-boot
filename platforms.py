@@ -102,11 +102,14 @@ class ECP5Mixin(_ProjectPlatform):
         cd_sync = ClockDomain("sync")
         m.domains += cd_sync
 
-        default_clk = self.default_clk if not None else "clk"
-        clk_port = self.request(default_clk, dir="i")
+        # Reference clock + frequency both come from the board's default_clk
+        # resource (its declared Clock()), so there's no separate constant.
+        clk_in = self.request(self.default_clk, dir="i").i
+        clk_freq = self.default_clk_frequency
+
         if self.is_hs:
             m.submodules.pll = pll = ECP5PLL()
-            pll.register_clkin(clk_port.i, 25e6)
+            pll.register_clkin(clk_in, clk_freq)
             pll.create_clkout(cd_sync, 60e6)
             self.add_clock_constraint(cd_sync.clk, 60e6)
 
@@ -115,9 +118,9 @@ class ECP5Mixin(_ProjectPlatform):
         else:
             cd_usb_io = ClockDomain("usb_io")
             m.domains += cd_usb_io
-        
+
             m.submodules.pll = pll = ECP5PLL()
-            pll.register_clkin(clk_port.i, 48e6)
+            pll.register_clkin(clk_in, clk_freq)
             pll.create_clkout(cd_usb_io, 48e6)
             self.add_clock_constraint(cd_usb_io.clk, 48e6)
 

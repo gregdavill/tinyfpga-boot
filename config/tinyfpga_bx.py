@@ -21,7 +21,8 @@ class TinyFPGABXPlatform(ICE40Mixin, _TinyFPGABXBase):
         m.domains += [cd_usb_io, cd_sync]
 
         m.submodules.pll = pll = ICE40PLL()
-        pll.register_clkin(self.request("clk16", dir="i").i, 16e6)
+        pll.register_clkin(self.request(self.default_clk, dir="i").i,
+                           self.default_clk_frequency)
         pll.create_clkout(cd_usb_io, 48e6)
         self.add_clock_constraint(cd_usb_io.clk, 48e6)
         self.add_clock_constraint(cd_sync.clk, 12e6)
