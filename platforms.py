@@ -102,9 +102,11 @@ class ECP5Mixin(_ProjectPlatform):
         cd_sync = ClockDomain("sync")
         m.domains += cd_sync
 
+        default_clk = self.default_clk if not None else "clk"
+        clk_port = self.request(default_clk, dir="i")
         if self.is_hs:
             m.submodules.pll = pll = ECP5PLL()
-            pll.register_clkin(self.request("clk", dir="i").i, 48e6)
+            pll.register_clkin(clk_port.i, 25e6)
             pll.create_clkout(cd_sync, 60e6)
             self.add_clock_constraint(cd_sync.clk, 60e6)
 
@@ -115,7 +117,7 @@ class ECP5Mixin(_ProjectPlatform):
             m.domains += cd_usb_io
         
             m.submodules.pll = pll = ECP5PLL()
-            pll.register_clkin(self.request("clk", dir="i").i, 48e6)
+            pll.register_clkin(clk_port.i, 48e6)
             pll.create_clkout(cd_usb_io, 48e6)
             self.add_clock_constraint(cd_usb_io.clk, 48e6)
 
