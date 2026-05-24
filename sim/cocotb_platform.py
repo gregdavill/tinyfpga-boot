@@ -10,7 +10,7 @@ port list.
 
 from amaranth.build.res import PortGroup
 from amaranth.lib import io
-from platforms import TinyFPGABXPlatform
+from config.tinyfpga_bx import TinyFPGABXPlatform
 
 
 class CocotbPlatform(TinyFPGABXPlatform):
