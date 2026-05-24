@@ -12,7 +12,7 @@ def build(config, *, build_dir="build", do_program=False):
     out = Path(build_dir)
 
     if config.platform.fpga_family == "ecp5":
-        # Configure BOOTADDR to support multi-boot. Used by bootloader to 
+        # Configure BOOTADDR to support multi-boot. Used by bootloader to
         # reconfigure the FPGA into the loaded gateware.
         bootaddr = config.reload_image_offset
         config.platform().build(
