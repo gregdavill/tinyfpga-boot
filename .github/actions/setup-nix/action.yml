@@ -1,0 +1,17 @@
+name: "Set up Nix dev shell"
+description: "Install Nix (flakes) and restore the cached dev-shell store closure."
+runs:
+  using: composite
+  steps:
+    - uses: cachix/install-nix-action@v30
+      with:
+        extra_nix_config: |
+          experimental-features = nix-command flakes
+
+    # Cache the /nix/store closure of the dev shell across runs, keyed on
+    # the locked flake.
+    - uses: nix-community/cache-nix-action@v6
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
+        gc-max-store-size-linux: 5G

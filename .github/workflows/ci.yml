@@ -12,124 +12,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Synthesise + place & route the bootloader for the iCE40 LP8K
+  # Synthesise + place & route each board's bitstream.
   gateware:
-    name: Build gateware (iCE40 LP8K)
+    name: Build gateware (${{ matrix.board }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [tinyfpga_bx, orangecrab, ecpbreaker]
     steps:
       - uses: actions/checkout@v4
-
-      - uses: cachix/install-nix-action@v30
+      - uses: ./.github/actions/setup-nix
+      - run: nix develop -c python build.py --board ${{ matrix.board }}
+      - uses: actions/upload-artifact@v4
         with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      # Cache the /nix/store closure of the dev shell across runs, keyed on the locked flake.
-      - uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-linux: 5G
-
-      - name: Build bitstream + multiboot image
-        run: nix develop -c python build.py
-
-      - name: Upload bitstreams
-        uses: actions/upload-artifact@v4
-        with:
-          name: gateware
+          name: gateware-${{ matrix.board }}
+          # iCE40 emits top.bin (+ multiboot.bin); ECP5 emits top.bit.
           path: |
             build/top.bin
+            build/top.bit
             build/multiboot.bin
-          if-no-files-found: error
-  
-  # Synthesise + place & route the bootloader for the ECP5
-  gateware_ecp5:
-    name: Build gateware (ECP5 25k)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+          if-no-files-found: ignore
 
-      - uses: cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      # Cache the /nix/store closure of the dev shell across runs, keyed on the locked flake.
-      - uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-linux: 5G
-
-      - name: Build bitstream + multiboot image
-        run: nix develop -c python build.py --board orangecrab
-
-      - name: Upload bitstreams
-        uses: actions/upload-artifact@v4
-        with:
-          name: gateware_ecp5
-          path: |
-            build/top.bit
-          if-no-files-found: error
-  
-  # Synthesise + place & route the bootloader for the ECP5
-  gateware_ecpbreaker:
-    name: Build gateware (ECP5 25k)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      # Cache the /nix/store closure of the dev shell across runs, keyed on the locked flake.
-      - uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-linux: 5G
-
-      - name: Build bitstream + multiboot image
-        run: nix develop -c python build.py --board ecpbreaker
-
-      - name: Upload bitstreams
-        uses: actions/upload-artifact@v4
-        with:
-          name: gateware_ecpbreaker
-          path: |
-            build/top.bit
-          if-no-files-found: error
-
-  # End-to-end cocotb integration regressions:
+  # End-to-end cocotb integration regressions (both serial sources).
   integration:
     name: cocotb integration regressions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-linux: 5G
-
-      - name: Run cocotb suite (flash_uid serial)
-        run: nix develop -c bash -c 'cd sim && make'
-
-      - name: Run cocotb suite (security_page serial)
-        run: nix develop -c bash -c 'cd sim && make SERIAL_SOURCE=security_page'
-
-      - name: Upload functional-coverage report
+      - uses: ./.github/actions/setup-nix
+      - name: Run cocotb suite
+        run: |
+          nix develop -c bash -c 'cd sim && make'
+          nix develop -c bash -c 'cd sim && make SERIAL_SOURCE=security_page'
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: |
@@ -137,26 +54,14 @@ jobs:
             sim/build/coverage_report.yaml
           if-no-files-found: warn
 
-  # Block-level unit tests
+  # Block-level unit tests.
   blocks:
     name: Block-level unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-linux: 5G
-
-      - name: Run block-level tests
-        run: >
+      - uses: ./.github/actions/setup-nix
+      - run: >
           nix develop -c python -m unittest -v
           blocks.flash blocks.flash_uid blocks.ghostfat
           blocks.qspi blocks.scsi blocks.uf2
