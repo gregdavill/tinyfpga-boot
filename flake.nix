@@ -52,11 +52,12 @@
           pytest-asyncio
         ]);
 
-        # iCE40 FOSS toolchains
+        # iCE40 + ECP5 FOSS toolchains
         fpgaTools = with pkgs; [
           yosys
-          nextpnr
-          icestorm
+          nextpnr        # provides nextpnr-ice40 and nextpnr-ecp5
+          icestorm       # iCE40 bitstream tools (icepack, icemulti, ...)
+          trellis        # ECP5 bitstream tools (ecppack, ecppll, ...)
           dfu-util
         ];
 
@@ -77,6 +78,7 @@
             echo "tinybx-bootloader nix dev shell"
             printf "  yosys     %s\n" "$(yosys -V 2>/dev/null | head -1)"
             printf "  nextpnr   %s\n" "$(nextpnr-ice40 --version 2>&1 | head -1)"
+            printf "  ecppack   %s\n" "$(ecppack --version 2>&1 | head -1)"
             printf "  iverilog  %s\n" "$(iverilog -V 2>&1 | head -1)"
             printf "  cocotb    %s\n" "$(cocotb-config --version 2>/dev/null)"
             printf "  python    %s\n" "$(python --version)"
