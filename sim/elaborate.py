@@ -1,7 +1,16 @@
 """Emit `build/sim_top.v` from `Top` for cocotb.
+
+Two targets, selected with `--board`:
+
+* `tinyfpga_bx` (default) - the iCE40 full-speed DUT on `CocotbPlatform`.
+* `ecpbreaker` - the ECP5 high-speed (ULPI) DUT on `CocotbHSPlatform`. The two
+  LUNA high-speed timers that would otherwise dominate sim time (the 2 ms
+  device chirp and the 1 ms ULPI Tstart) are shortened, in the same spirit as
+  the FS build's `reload_idle_cycles` shortening.
 """
 
 import argparse
+import dataclasses
 import os
 import pathlib
 import sys
@@ -17,13 +26,40 @@ sys.path.insert(0, str(ROOT))
 
 from top import Top                       # noqa: E402
 from config import BoardConfig, SerialSource, SLOT1_OFFSET  # noqa: E402
+import config as _config                  # noqa: E402
 from sim.cocotb_platform import CocotbPlatform  # noqa: E402
+from sim.cocotb_hs_platform import CocotbHSPlatform  # noqa: E402
 from sim import fsm_state_names                  # noqa: E402
 
 # Patch Amaranth so every `m.FSM()` also exposes an ASCII-encoded
 # state-name signal in the generated Verilog. Must run before Top()
 # is instantiated.
 fsm_state_names.install()
+
+
+def shorten_hs_timers(device_chirp_cycles=240, tstart_cycles=240,
+                      hs_reset_cycles=600, detect_suspend_cycles=200):
+    """Shrink LUNA's big high-speed timers so HS enumeration - and, crucially,
+    re-resetting an already-high-speed device between tests - fits a sim-time
+    budget. The host PHY model keys off bus events (device chirp start/end,
+    line state), not these absolute durations, so shortening them doesn't
+    change the handshake the testbench has to drive.
+
+    Must run before `Top()` (and thus the LUNA submodules) is built.
+    """
+    from luna.gateware.usb.usb2.reset import USBResetSequencer
+    from luna.gateware.interface.ulpi import UTMITranslator
+    # DEVICE_CHIRP holds for _CYCLES_2_MILLISECONDS; Tstart gates the ULPI bus
+    # for _CYCLES_1_MILLISECONDS.
+    USBResetSequencer._CYCLES_2_MILLISECONDS = device_chirp_cycles
+    UTMITranslator._CYCLES_1_MILLISECONDS = tstart_cycles
+    # From HS_NON_RESET an SE0 of _CYCLES_3_MILLISECONDS drops to FS, then
+    # DETECT_HS_SUSPEND waits _CYCLES_200_MICROSECONDS before re-running
+    # high-speed detection. Shorten both so an inter-test reset re-chirps fast.
+    # (These also size the `timer`/`line_state_time` counters; keep them well
+    # above the chirp constants 240 / 150 that are still compared against them.)
+    USBResetSequencer._CYCLES_3_MILLISECONDS = hs_reset_cycles
+    USBResetSequencer._CYCLES_200_MICROSECONDS = detect_suspend_cycles
 
 
 def emit(platform, design, *, name: str = "sim_top", emit_src: bool = False) -> str:
@@ -68,8 +104,46 @@ def emit(platform, design, *, name: str = "sim_top", emit_src: bool = False) -> 
     return text
 
 
+def _fs_sim_config(serial_source):
+    """Full-speed (TinyFPGA BX) sim config. Mostly just shortens the warmboot
+    idle window so the BOOT pulse fires inside our per-test sim-time budget;
+    hardware builds use the platform defaults (~50 ms)."""
+    return BoardConfig(
+        name="sim",
+        platform=CocotbPlatform,
+        vid=0x1209, pid=0x5AF0,
+        manufacturer="TinyFPGA", product="Bootloader",
+        board_id="TinyFPGA-BX-v1", model="TinyFPGA BX",
+        url="https://tinyfpga.com",
+        scsi_vendor="TINYFPGA", scsi_product="UF2 Bootloader",
+        serial_source=SerialSource(serial_source),
+        reload_slot=1,
+        reload_image_offset=SLOT1_OFFSET,
+        # ~85 µs at 12 MHz
+        reload_idle_cycles=1000,
+    )
+
+
+def _hs_sim_config(serial_source):
+    """High-speed (ecpbreaker) sim config: the real board config retargeted to
+    the sim platform, with a short reload-idle window (cycles are 60 MHz)."""
+    return dataclasses.replace(
+        _config.ecpbreaker,
+        name="sim_hs",
+        platform=CocotbHSPlatform,
+        serial_source=SerialSource(serial_source),
+        reload_idle_cycles=2000,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Emit sim_top.v for cocotb")
+    parser.add_argument(
+        "--board",
+        default="tinyfpga_bx",
+        choices=["tinyfpga_bx", "ecpbreaker"],
+        help="which DUT to elaborate (default: tinyfpga_bx, full-speed)",
+    )
     parser.add_argument(
         "--serial-source",
         default=os.environ.get("SERIAL_SOURCE", "flash_uid"),
@@ -80,33 +154,25 @@ def main():
                         help="output Verilog path (default: sim/build/sim_top.v)")
     args = parser.parse_args()
 
-    platform = CocotbPlatform()
+    if args.board == "ecpbreaker":
+        shorten_hs_timers()
+        platform = CocotbHSPlatform()
+        sim_config = _hs_sim_config(args.serial_source)
+        default_out = ROOT / "sim" / "build" / "sim_top_hs.v"
+    else:
+        platform = CocotbPlatform()
+        sim_config = _fs_sim_config(args.serial_source)
+        default_out = ROOT / "sim" / "build" / "sim_top.v"
 
-    # Use a sim-only config that mostly just shortens the warmboot
-    # idle window so the BOOT pulse fires inside our per-test sim-time
-    # budget. Hardware builds use the platform defaults ~50 ms.
-    sim_config = BoardConfig(
-        name="sim",
-        platform=CocotbPlatform,
-        vid=0x1209, pid=0x5AF0,
-        manufacturer="TinyFPGA", product="Bootloader",
-        board_id="TinyFPGA-BX-v1", model="TinyFPGA BX",
-        url="https://tinyfpga.com",
-        scsi_vendor="TINYFPGA", scsi_product="UF2 Bootloader",
-        serial_source=SerialSource(args.serial_source),
-        reload_slot=1,
-        reload_image_offset=SLOT1_OFFSET,
-        # ~85 µs at 12 MHz
-        reload_idle_cycles=1000,
-    )
     top = Top(sim_config)
 
     text = emit(platform, top)
 
-    out_path = pathlib.Path(args.out) if args.out else ROOT / "sim" / "build" / "sim_top.v"
+    out_path = pathlib.Path(args.out) if args.out else default_out
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text)
-    print(f"wrote {out_path} (serial_source={args.serial_source}, {len(text)} bytes)")
+    print(f"wrote {out_path} (board={args.board}, "
+          f"serial_source={args.serial_source}, {len(text)} bytes)")
 
 
 if __name__ == "__main__":

@@ -10,10 +10,40 @@ SIM      ?= icarus
 TOPLEVEL_LANG ?= verilog
 TOPLEVEL  := sim_top
 
-# Which serial source the DUT is elaborated with (see BoardConfig).
-# The default (flash_uid) keeps the original build/sim_top.v paths; the
-# security_page variant gets suffixed paths so the two don't clobber.
+# Behavioural models for the FPGA primitives that survive elaboration are
+# resolved at build time from the installed yosys.
+YOSYS_DATDIR    := $(shell yosys-config --datdir 2>/dev/null)
+ifeq ($(YOSYS_DATDIR),)
+$(error yosys-config not found on PATH — install yosys so we can pull in cells_sim.v)
+endif
+
+# `TARGET` selects the DUT family:
+#   fs (default) - iCE40 TinyFPGA BX, full-speed gateware PHY.
+#   hs           - ECP5 ecpbreaker, high-speed ULPI PHY.
+TARGET ?= fs
+
+# Serial source baked into the DUT (used for elaboration on both targets, and
+# for path suffixing on fs). See BoardConfig / elaborate.py.
 SERIAL_SOURCE ?= flash_uid
+
+ifeq ($(TARGET),hs)
+# --- High-speed (ECP5 / ULPI) ---------------------------------------------
+COCOTB_TEST_MODULES ?= cocotb_tests.test_bootloader_hs
+SIM_TOP_V   := $(PWD)/build/sim_top_hs.v
+SIM_BUILD   := $(PWD)/build/sim_$(SIM)_hs
+ELAB_BOARD  := ecpbreaker
+
+# Self-contained behavioural models for the handful of ECP5 hard cells the
+# emitted DUT instantiates (IO buffers, DDR registers, PLL). yosys' own
+# ecp5/cells_sim.v can't be fed to iverilog directly (unguarded includes; the
+# DDR/PLL cells are blackboxes), so we model them ourselves.
+TARGET_CELLS   := $(PWD)/ecp5_cells_sim.v
+
+else
+# --- Full-speed (iCE40) ----------------------------------------------------
+# The default serial source (flash_uid) keeps the original build/sim_top.v
+# paths; the security_page variant gets suffixed paths so they don't clobber.
+ELAB_BOARD    := tinyfpga_bx
 ifeq ($(SERIAL_SOURCE),flash_uid)
 COCOTB_TEST_MODULES ?= cocotb_tests.test_bootloader
 SIM_TOP_V := $(PWD)/build/sim_top.v
@@ -24,23 +54,12 @@ SIM_TOP_V := $(PWD)/build/sim_top_$(SERIAL_SOURCE).v
 SIM_BUILD := $(PWD)/build/sim_$(SIM)_$(SERIAL_SOURCE)
 endif
 
-# Default target — without this, the first user-defined target below
-# (the awk recipe for cells_sim_no_pll.v) wins and `make` exits without
-# running cocotb.
-.DEFAULT_GOAL := sim
-
-# Behavioural models for the iCE40 primitives that survived elaboration
-# (SB_PLL40_CORE, SB_IO, SB_DFF). Resolved at build time from the
-# installed yosys.
-YOSYS_DATDIR    := $(shell yosys-config --datdir 2>/dev/null)
-ifeq ($(YOSYS_DATDIR),)
-$(error yosys-config not found on PATH — install yosys so we can pull in ice40/cells_sim.v)
-endif
 ICE40_CELLS_SIM := $(YOSYS_DATDIR)/ice40/cells_sim.v
 
 # yosys' SB_PLL40_CORE is a `(* blackbox *)` — useless under iverilog.
 # Strip it and provide our own passthrough model alongside.
 CELLS_SIM_NO_PLL := $(PWD)/build/cells_sim_no_pll.v
+TARGET_CELLS     := $(PWD)/ice40_pll_sim.v $(CELLS_SIM_NO_PLL)
 
 $(CELLS_SIM_NO_PLL): $(ICE40_CELLS_SIM) | $(PWD)/build
 	awk '\
@@ -51,14 +70,19 @@ $(CELLS_SIM_NO_PLL): $(ICE40_CELLS_SIM) | $(PWD)/build
 	  pending != ""              { print pending; pending = "" } \
 	                             { print } \
 	' $< > $@
+endif
+
+# Default target — without this, the first user-defined target below
+# (the awk recipe for cells_sim_no_pll.v) wins and `make` exits without
+# running cocotb.
+.DEFAULT_GOAL := sim
 
 $(PWD)/build:
 	mkdir -p $@
 
 VERILOG_SOURCES := \
 	$(SIM_TOP_V) \
-	$(PWD)/ice40_pll_sim.v \
-	$(CELLS_SIM_NO_PLL)
+	$(TARGET_CELLS)
 
 # `make WAVES=1` uses cocotb's standard FST dumper.
 
@@ -83,10 +107,12 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 
 # Convenience: emit Verilog as part of `make`. The blocks that feed the
 # serial source are prerequisites so a change re-elaborates the DUT.
-$(SIM_TOP_V): elaborate.py cocotb_platform.py ../top.py \
+$(SIM_TOP_V): elaborate.py cocotb_platform.py cocotb_hs_platform.py ../top.py \
+		../platforms.py ../config/__init__.py ../config/tinyfpga_bx.py \
+		../config/ecpbreaker.py \
 		../blocks/security_page.py ../blocks/json_key_parser.py \
 		../blocks/usb/serial_handler.py | $(PWD)/build
-	python elaborate.py --serial-source $(SERIAL_SOURCE) --out $@
+	python elaborate.py --board $(ELAB_BOARD) --serial-source $(SERIAL_SOURCE) --out $@
 
 clean::
 	rm -rf build

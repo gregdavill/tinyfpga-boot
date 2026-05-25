@@ -93,7 +93,7 @@ class SPIFlashModel:
                  security_data: bytes = (
                      b'{"boardmeta": {"name": "TinyFPGA BX", '
                      b'"uuid": "CAFEBABE-DEAD-BEEF-0123-456789ABCDEF"}}'),
-                 wip_polls_after_write: int = 0):
+                 wip_polls_after_write: int = 0, pins=None):
         """`wip_polls_after_write` simulates a flash that holds WIP=1 for
         N status reads after each page-program or sector-erase before
         clearing.
@@ -101,10 +101,14 @@ class SPIFlashModel:
         `security_data` is the byte blob returned by the Read Security
         Registers (0x48) command — the JSON the `SecurityPage` block
         scans for the board `uuid`.
+
+        `pins` lets callers pass a pre-built pin adapter (e.g. the HS DUT's
+        `attach_hs(dut)`); only the `spi_*` fields are used. Defaults to the
+        full-speed `attach(dut)`.
         """
         assert len(uid) == 8
         self.dut    = dut
-        self.pins   = attach_pins(dut)
+        self.pins   = pins if pins is not None else attach_pins(dut)
         self.size   = size
         self.memory = bytearray(b"\xFF" * size)
         self.uid    = uid
