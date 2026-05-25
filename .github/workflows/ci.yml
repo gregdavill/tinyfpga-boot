@@ -58,6 +58,7 @@ jobs:
         run: |
           nix develop -c bash -c 'cd sim && make'
           nix develop -c bash -c 'cd sim && make SERIAL_SOURCE=security_page'
+          nix develop -c bash -c 'cd sim && make TARGET=hs'
       - uses: actions/upload-artifact@v6
         if: always()
         with:
