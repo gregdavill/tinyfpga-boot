@@ -30,10 +30,9 @@ class OrangeCrabR0_2ULPIPlatform(ECP5Mixin, _OrangeCrabBase):
             Subsignal("dq", Pins("U18 T18 R18 N18", dir="io")),
             Attrs(IO_TYPE="LVCMOS33"),
         ),
-        # PROGRAMN (V17): open-drain — pulling it low reloads the FPGA from
-        # flash. Driven by OpenDrainReconfigure (o=0, oe asserts the pull).
-        Resource("reconfigure", 0, Pins("V17", dir="io"),
-                 Attrs(IO_TYPE="LVCMOS33")),
+        # PROGRAMN (V17): pulling it low reloads the FPGA from flash.
+        Resource("reconfigure", 0, PinsN("V17", dir="o"),
+                 Attrs(IO_TYPE="LVCMOS33", OPENDRAIN="ON")),
     ]
 
 

@@ -41,7 +41,7 @@ class ECPBreakerR3_0Platform(ECP5Mixin, LatticeECP5Platform):
         ),
 
         Resource('spi_flash_4x', 0,
-            Subsignal('cs', Pins('R2')),
+            Subsignal('cs', PinsN('R2')),
             # CLK connected to U3 (CCLK) on PCB (enables use of DDR/better timing than CCLK)
             Subsignal('clk', Pins('T1')),
             Subsignal('dq', Pins('W2 V2 Y2 W1')),
