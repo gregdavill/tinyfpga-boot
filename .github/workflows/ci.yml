@@ -44,7 +44,7 @@ jobs:
             build/top.bin
             build/top.bit
             build/multiboot.bin
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   # End-to-end cocotb integration regressions (both serial sources).
   integration:
