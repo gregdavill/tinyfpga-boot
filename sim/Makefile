@@ -26,6 +26,10 @@ TARGET ?= fs
 # for path suffixing on fs). See BoardConfig / elaborate.py.
 SERIAL_SOURCE ?= flash_uid
 
+# USB personality baked into the DUT: `uf2` (default, Mass-Storage / UF2) or
+# `serial` (TinyFPGA tinyprog CDC-ACM bridge). See BoardConfig / elaborate.py.
+BACKEND ?= uf2
+
 ifeq ($(TARGET),hs)
 # --- High-speed (ECP5 / ULPI) ---------------------------------------------
 COCOTB_TEST_MODULES ?= cocotb_tests.test_bootloader_hs
@@ -42,9 +46,14 @@ TARGET_CELLS   := $(PWD)/ecp5_cells_sim.v
 else
 # --- Full-speed (iCE40) ----------------------------------------------------
 # The default serial source (flash_uid) keeps the original build/sim_top.v
-# paths; the security_page variant gets suffixed paths so they don't clobber.
+# paths; the security_page variant and the serial backend get suffixed paths
+# so they don't clobber.
 ELAB_BOARD    := tinyfpga_bx
-ifeq ($(SERIAL_SOURCE),flash_uid)
+ifeq ($(BACKEND),serial)
+COCOTB_TEST_MODULES ?= cocotb_tests.test_serial_bridge
+SIM_TOP_V := $(PWD)/build/sim_top_serial.v
+SIM_BUILD := $(PWD)/build/sim_$(SIM)_serial
+else ifeq ($(SERIAL_SOURCE),flash_uid)
 COCOTB_TEST_MODULES ?= cocotb_tests.test_bootloader
 SIM_TOP_V := $(PWD)/build/sim_top.v
 SIM_BUILD := $(PWD)/build/sim_$(SIM)
@@ -111,8 +120,11 @@ $(SIM_TOP_V): elaborate.py cocotb_platform.py cocotb_hs_platform.py ../top.py \
 		../platforms.py ../config/__init__.py ../config/tinyfpga_bx.py \
 		../config/ecpbreaker.py \
 		../blocks/security_page.py ../blocks/json_key_parser.py \
-		../blocks/usb/serial_handler.py | $(PWD)/build
-	python elaborate.py --board $(ELAB_BOARD) --serial-source $(SERIAL_SOURCE) --out $@
+		../blocks/usb/serial_handler.py ../blocks/spi_bridge.py \
+		../backends/__init__.py ../backends/uf2_msc.py ../backends/serial_bridge.py \
+		| $(PWD)/build
+	python elaborate.py --board $(ELAB_BOARD) --serial-source $(SERIAL_SOURCE) \
+		--backend $(BACKEND) --out $@
 
 clean::
 	rm -rf build

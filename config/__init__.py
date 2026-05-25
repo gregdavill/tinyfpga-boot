@@ -28,6 +28,15 @@ class SerialSource(enum.Enum):
     SECURITY_PAGE = "security_page"
 
 
+class Backend(enum.Enum):
+    """The USB personality the bootloader presents. Exactly one is active
+    per build; they never coexist at runtime."""
+    #: Mass-Storage / UF2 drag-and-drop
+    UF2_MSC = "uf2"
+    #: TinyFPGA CDC-ACM serial USB->SPI bridge
+    TINYFPGA_SERIAL = "serial"
+
+
 @dataclass
 class BoardConfig:
     #: Board identifier (the `build.py --board` key).
@@ -47,6 +56,7 @@ class BoardConfig:
     scsi_product: str
 
     serial_source: SerialSource = SerialSource.FLASH_UID
+    backend: Backend = Backend.UF2_MSC
 
     # SB_WARMBOOT slot to reload after a complete UF2 transfer.
     reload_slot: int = 1

@@ -518,12 +518,16 @@ class USBHost:
                 )
             tog.out ^= 1
 
-    async def bulk_in(self, endpoint: int, length: int, *, max_packet: int = 64) -> bytes:
+    async def bulk_in(self, endpoint: int, length: int, *, max_packet: int = 64,
+                      max_retries: int = 10) -> bytes:
+        # `max_retries` bounds how long we tolerate a NAKing endpoint. 
+        # Bulk IN allows unbounded NAK retries on real hardware.
         tog = self.toggles.setdefault(endpoint, EndpointToggle())
         received = bytearray()
         while len(received) < length:
             expected = PID.DATA1 if tog.in_ else PID.DATA0
-            chunk = await self._retry_in(self.address, endpoint, expected_pid=expected)
+            chunk = await self._retry_in(self.address, endpoint,
+                                         expected_pid=expected, max_retries=max_retries)
             received.extend(chunk)
             tog.in_ ^= 1
             if len(chunk) < max_packet:
