@@ -57,10 +57,38 @@ class Top(Elaboratable):
             base_addr=config.reload_image_offset if config else 0)
         self.flash = QspiFlash()
 
+    @staticmethod
+    def _populate_configuration(c, bulk_mps):
+        """Fill a configuration descriptor with our single mass-storage
+        interface and its EP1 bulk OUT/IN pair at `bulk_mps`. Shared by the
+        active configuration and (on HS) the other-speed configuration."""
+        c.bMaxPower = 100
+
+        with c.InterfaceDescriptor() as i:
+            i.bInterfaceNumber   = 0
+            i.bInterfaceClass    = 0x08  # Mass Storage
+            i.bInterfaceSubclass = 0x06  # SCSI Transparent Command Set
+            i.bInterfaceProtocol = 0x50  # Bulk-Only Transport
+
+            i.iInterface = "UF2"
+
+            with i.EndpointDescriptor() as ep:
+                ep.bEndpointAddress = 0x01  # EP1 OUT
+                ep.bmAttributes     = 0x02  # Bulk
+                ep.wMaxPacketSize   = bulk_mps
+                ep.bInterval        = 0
+
+            with i.EndpointDescriptor() as ep:
+                ep.bEndpointAddress = 0x81  # EP1 IN
+                ep.bmAttributes     = 0x02  # Bulk
+                ep.wMaxPacketSize   = bulk_mps
+                ep.bInterval        = 0
+
     def create_descriptors(self, hs):
         """ Create the descriptors we want to use for our device. """
 
-        # High-speed bulk endpoints must advertise 512-byte max packets.
+        # High-speed bulk endpoints must advertise 512-byte max packets;
+        # the other-speed (full-speed) view always advertises 64.
         bulk_mps = 512 if hs else 64
 
         descriptors = DeviceDescriptorCollection()
@@ -70,6 +98,7 @@ class Top(Elaboratable):
             d.idProduct          = self.config.pid if self.config else 0x5af0
 
             d.bcdDevice          = 2.0
+            d.bMaxPacketSize0    = 64
 
             d.iManufacturer      = self.config.manufacturer if self.config else "TinyFPGA"
             d.iProduct           = self.config.product if self.config else "Bootloader"
@@ -81,28 +110,35 @@ class Top(Elaboratable):
         self.descriptor_iSerialNumber = d.fields['iSerialNumber']
 
         with descriptors.ConfigurationDescriptor() as c:
+            self._populate_configuration(c, bulk_mps)
 
-            c.bMaxPower = 100 
+        # A high-speed-capable device must additionally answer
+        # GET_DESCRIPTOR(DEVICE_QUALIFIER) and GET_DESCRIPTOR(OTHER_SPEED_
+        # CONFIGURATION) describing how it would behave at the other speed
+        # [USB2.0 9.6.2/9.6.4]. LUNA's GET_DESCRIPTOR ROM stalls any type it
+        # wasn't given, so we add them explicitly here.
+        if hs:
+            from usb_protocol.emitters.descriptors.standard import (
+                DeviceQualifierDescriptor, ConfigurationDescriptorEmitter,
+            )
 
-            with c.InterfaceDescriptor() as i:
-                i.bInterfaceNumber   = 0
-                i.bInterfaceClass    = 0x08  # Mass Storage
-                i.bInterfaceSubclass = 0x06  # SCSI Transparent Command Set
-                i.bInterfaceProtocol = 0x50  # Bulk-Only Transport
+            dq = DeviceQualifierDescriptor()
+            dq.bcdUSB            = 2.0
+            dq.bDeviceClass      = 0
+            dq.bDeviceSubclass   = 0
+            dq.bDeviceProtocol   = 0
+            dq.bMaxPacketSize0   = 64      # must match the device descriptor
+            dq.bNumConfigurations = 1
+            descriptors.add_descriptor(dq)  # type 6, derived from byte[1]
 
-                i.iInterface = "UF2"
-
-                with i.EndpointDescriptor() as ep:
-                    ep.bEndpointAddress = 0x01  # EP1 OUT
-                    ep.bmAttributes     = 0x02  # Bulk
-                    ep.wMaxPacketSize   = bulk_mps
-                    ep.bInterval        = 0
-
-                with i.EndpointDescriptor() as ep:
-                    ep.bEndpointAddress = 0x81  # EP1 IN
-                    ep.bmAttributes     = 0x02  # Bulk
-                    ep.wMaxPacketSize   = bulk_mps
-                    ep.bInterval        = 0
+            # Other-speed configuration: identical interface but with the
+            # full-speed (64-byte) bulk endpoints. Emit a normal configuration
+            # descriptor, then rewrite its type byte 2 -> 7.
+            other = ConfigurationDescriptorEmitter(collection=descriptors)
+            self._populate_configuration(other, 64)
+            blob = bytearray(other.emit())
+            blob[1] = 7  # CONFIGURATION (2) -> OTHER_SPEED_CONFIGURATION (7)
+            descriptors.add_descriptor(bytes(blob), descriptor_type=7)
 
         return descriptors
     
