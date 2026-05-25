@@ -1,6 +1,4 @@
-"""OrangeCrab r0.2 (ECP5) high-speed timing-exploration target."""
-
-
+"""OrangeCrab r0.2 (ECP5)"""
 
 from amaranth import *
 from amaranth.build import Resource, Subsignal, Pins, PinsN, Attrs
@@ -17,8 +15,8 @@ class OrangeCrabR0_2ULPIPlatform(ECP5Mixin, _OrangeCrabBase):
     fpga_family = "ecp5"
     flash_clk   = "usrmclk"
 
-    # # Drop the board's stock `spi_flash` (re-declared below) and `program`
-    # # (re-exposed as the open-drain `reconfigure` line).
+    # Drop the board's stock `spi_flash` (re-declared below) and `program`
+    # (re-exposed as the open-drain `reconfigure` line).
     _base = [r for r in _OrangeCrabBase.resources
              if getattr(r, "name", "") not in ("program",)
              and not getattr(r, "name", "").startswith("spi_flash")]
