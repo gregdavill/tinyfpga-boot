@@ -15,11 +15,7 @@ mappings for timing exploration, not real PHY wiring.
 """
 
 from amaranth import *
-from amaranth.build import Resource, Subsignal, Pins, PinsN, Attrs
-from amaranth_boards.tinyfpga_bx import TinyFPGABXPlatform as _TinyFPGABXBase
-from amaranth_boards.orangecrab_r0_2 import OrangeCrabR0_2Platform as _OrangeCrabBase
 
-from blocks.lib.ice40.pll import ICE40PLL
 from blocks.lib.ecp5.pll import ECP5PLL
 from blocks.reconfigure import WarmbootReconfigure, OpenDrainReconfigure
 
