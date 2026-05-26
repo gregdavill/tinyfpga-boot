@@ -104,10 +104,17 @@ def emit(platform, design, *, name: str = "sim_top", emit_src: bool = False) -> 
     return text
 
 
-def _fs_sim_config(serial_source, backend):
+def _fs_sim_config(serial_source, backend, autoboot=False):
     """Full-speed (TinyFPGA BX) sim config. Mostly just shortens the warmboot
     idle window so the BOOT pulse fires inside our per-test sim-time budget;
-    hardware builds use the platform defaults (~50 ms)."""
+    hardware builds use the platform defaults (~50 ms).
+
+    `autoboot=True` enables the auto-boot decision with the button + WEL stay
+    sources (the sim platform grows a `button` resource to match)."""
+    stay = ()
+    if autoboot:
+        from staysource import ButtonStaySource, WriteEnableStaySource
+        stay = (ButtonStaySource, WriteEnableStaySource)
     return BoardConfig(
         name="sim",
         platform=CocotbPlatform,
@@ -122,6 +129,7 @@ def _fs_sim_config(serial_source, backend):
         reload_image_offset=SLOT1_OFFSET,
         # ~85 µs at 12 MHz
         reload_idle_cycles=1000,
+        stay_sources=stay,
     )
 
 
@@ -135,6 +143,7 @@ def _hs_sim_config(serial_source, backend):
         serial_source=SerialSource(serial_source),
         backend=Backend(backend),
         reload_idle_cycles=2000,
+        stay_sources=(),
     )
 
 
@@ -158,6 +167,11 @@ def main():
         choices=[b.value for b in Backend],
         help="USB personality baked into the DUT (default: uf2)",
     )
+    parser.add_argument(
+        "--autoboot", action="store_true",
+        default=os.environ.get("AUTOBOOT", "0") == "1",
+        help="enable the auto-boot decision with button + WEL stay sources (FS only)",
+    )
     parser.add_argument("--out", default=None,
                         help="output Verilog path (default: sim/build/sim_top.v)")
     args = parser.parse_args()
@@ -169,7 +183,7 @@ def main():
         default_out = ROOT / "sim" / "build" / "sim_top_hs.v"
     else:
         platform = CocotbPlatform()
-        sim_config = _fs_sim_config(args.serial_source, args.backend)
+        sim_config = _fs_sim_config(args.serial_source, args.backend, autoboot=args.autoboot)
         default_out = ROOT / "sim" / "build" / "sim_top.v"
 
     top = Top(sim_config)

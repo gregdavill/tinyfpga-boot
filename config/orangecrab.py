@@ -6,6 +6,7 @@ from amaranth_boards.orangecrab_r0_2 import OrangeCrabR0_2Platform as _OrangeCra
 
 from platforms import ECP5Mixin
 from config import BoardConfig, SerialSource, SLOT1_OFFSET
+from staysource import ButtonStaySource, WriteEnableStaySource
 
 class OrangeCrabR0_2ULPIPlatform(ECP5Mixin, _OrangeCrabBase):
     """OrangeCrab r0.2 (ECP5 LFE5U-25F)
@@ -49,4 +50,5 @@ board = BoardConfig(
     serial_source=SerialSource.SECURITY_PAGE,
     reload_slot=1,
     reload_image_offset=SLOT1_OFFSET,
+    stay_sources=(ButtonStaySource, WriteEnableStaySource),
 )

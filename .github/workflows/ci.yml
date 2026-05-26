@@ -61,6 +61,7 @@ jobs:
           nix develop -c bash -c 'cd sim && make SERIAL_SOURCE=security_page'
           nix develop -c bash -c 'cd sim && make TARGET=hs'
           nix develop -c bash -c 'cd sim && make BACKEND=serial'
+          nix develop -c bash -c 'cd sim && make AUTOBOOT=1'
       - uses: actions/upload-artifact@v6
         if: always()
         with:
@@ -83,3 +84,4 @@ jobs:
           blocks.flash blocks.flash_uid blocks.ghostfat
           blocks.qspi blocks.scsi blocks.uf2 blocks.spi_bridge
           blocks.security_page blocks.json_key_parser blocks.hex_encoder
+          staysource.no_valid_app staysource.write_enable

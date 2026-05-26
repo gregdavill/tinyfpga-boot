@@ -30,6 +30,15 @@ SERIAL_SOURCE ?= flash_uid
 # `serial` (TinyFPGA tinyprog CDC-ACM bridge). See BoardConfig / elaborate.py.
 BACKEND ?= uf2
 
+# `AUTOBOOT=1` builds the FS DUT with auto-boot enabled (button + WEL stay
+# sources) and runs the auto-boot test module.
+AUTOBOOT ?= 0
+ifeq ($(AUTOBOOT),1)
+AUTOBOOT_FLAG := --autoboot
+else
+AUTOBOOT_FLAG :=
+endif
+
 ifeq ($(TARGET),hs)
 # --- High-speed (ECP5 / ULPI) ---------------------------------------------
 COCOTB_TEST_MODULES ?= cocotb_tests.test_bootloader_hs
@@ -49,7 +58,11 @@ else
 # paths; the security_page variant and the serial backend get suffixed paths
 # so they don't clobber.
 ELAB_BOARD    := tinyfpga_bx
-ifeq ($(BACKEND),serial)
+ifeq ($(AUTOBOOT),1)
+COCOTB_TEST_MODULES ?= cocotb_tests.test_autoboot
+SIM_TOP_V := $(PWD)/build/sim_top_autoboot.v
+SIM_BUILD := $(PWD)/build/sim_$(SIM)_autoboot
+else ifeq ($(BACKEND),serial)
 COCOTB_TEST_MODULES ?= cocotb_tests.test_serial_bridge
 SIM_TOP_V := $(PWD)/build/sim_top_serial.v
 SIM_BUILD := $(PWD)/build/sim_$(SIM)_serial
@@ -122,9 +135,11 @@ $(SIM_TOP_V): elaborate.py cocotb_platform.py cocotb_hs_platform.py ../top.py \
 		../blocks/security_page.py ../blocks/json_key_parser.py \
 		../blocks/usb/serial_handler.py ../blocks/spi_bridge.py \
 		../backends/__init__.py ../backends/uf2_msc.py ../backends/serial_bridge.py \
+		../staysource/__init__.py ../staysource/button.py \
+		../staysource/no_valid_app.py ../staysource/write_enable.py \
 		| $(PWD)/build
 	python elaborate.py --board $(ELAB_BOARD) --serial-source $(SERIAL_SOURCE) \
-		--backend $(BACKEND) --out $@
+		--backend $(BACKEND) $(AUTOBOOT_FLAG) --out $@
 
 clean::
 	rm -rf build

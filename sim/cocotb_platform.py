@@ -8,6 +8,7 @@ dir='-'. Capture these ports for inclusion in the top-level Verilog
 port list.
 """
 
+from amaranth.build import Resource, PinsN, Attrs
 from amaranth.build.res import PortGroup
 from amaranth.lib import io
 from config.tinyfpga_bx import TinyFPGABXPlatform
@@ -43,3 +44,9 @@ class CocotbPlatform(_RawPortCaptureMixin, TinyFPGABXPlatform):
     platform's clock/reset generation)."""
 
     toolchain = None
+
+    # The stock TinyFPGA BX has no button; add one here so the auto-boot
+    # sim config can exercise ButtonStaySource.
+    resources = TinyFPGABXPlatform.resources + [
+        Resource("button", 0, PinsN("A9", dir="i"), Attrs(IO_STANDARD="SB_LVCMOS")),
+    ]
