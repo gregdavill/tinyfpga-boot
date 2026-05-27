@@ -36,7 +36,6 @@ class SerialBridgeBackend(Backend):
         self.usb_ids = (0x1d50, 0x6130)
 
         bulk_mps = 512 if hs else 64
-        self._bulk_mps   = bulk_mps
         self._notify_mps = 8
 
         self.notify_ep   = USBStreamInEndpoint(

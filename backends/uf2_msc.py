@@ -27,7 +27,6 @@ class Uf2MscBackend(Backend):
         mps = 512 if hs else 64
         self.out_ep = USBStreamOutEndpoint(endpoint_number=1, max_packet_size=mps)
         self.in_ep  = USBStreamInEndpoint(endpoint_number=1, max_packet_size=mps)
-        self._bulk_mps = mps
 
         self.ms_handler = MassStorageRequestHandler(if_num=0)
 
