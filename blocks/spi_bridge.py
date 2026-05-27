@@ -242,6 +242,33 @@ class TestSpiBridge(unittest.TestCase):
 
         simulate(dut, testbench)
 
+    def test_empty_frame(self):
+        """A 0x01 frame with wlen=0 and rlen=0 is a CS-only no-op: it toggles
+        CS via RELEASE and returns to idle without emitting any tx bytes."""
+        dut, pads = self.dut, self.pads
+
+        async def testbench(ctx):
+            ctx.set(pads.dq.i, 0b0000)
+            await ctx.tick().repeat(3)
+
+            # cmd, wlen=0, rlen=0 — nothing shifted, nothing read.
+            for b in [0x01, 0, 0, 0, 0]:
+                await self._put(ctx, b)
+
+            # Must release CS and return to idle, accepting a fresh command.
+            await ctx.tick().repeat(50)
+            ctx.set(dut.rx.p.data, 0x01)
+            ctx.set(dut.rx.valid, 1)
+            accepted = False
+            for _ in range(50):
+                if ctx.get(dut.rx.ready):
+                    accepted = True
+                    break
+                await ctx.tick()
+            self.assertTrue(accepted)
+
+        simulate(dut, testbench)
+
     def test_boot(self):
         """A lone 0x00 byte pulses `boot`."""
         dut = self.dut
