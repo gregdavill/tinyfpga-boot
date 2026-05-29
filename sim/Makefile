@@ -35,6 +35,8 @@ BACKEND ?= uf2
 AUTOBOOT ?= 0
 ifeq ($(AUTOBOOT),1)
 AUTOBOOT_FLAG := --autoboot
+COCOTB_TEST_FILTER ?= test_auto_boots_into_app
+export COCOTB_TEST_FILTER
 else
 AUTOBOOT_FLAG :=
 endif

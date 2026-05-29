@@ -61,7 +61,12 @@ jobs:
           nix develop -c bash -c 'cd sim && make SERIAL_SOURCE=security_page'
           nix develop -c bash -c 'cd sim && make TARGET=hs'
           nix develop -c bash -c 'cd sim && make BACKEND=serial'
+          
+          # Auto-boot:
           nix develop -c bash -c 'cd sim && make AUTOBOOT=1'
+          nix develop -c bash -c 'cd sim && make AUTOBOOT=1 COCOTB_TEST_FILTER=test_no_valid_app_stays'
+          nix develop -c bash -c 'cd sim && make AUTOBOOT=1 COCOTB_TEST_FILTER=test_write_enable_latch_stays'
+          nix develop -c bash -c 'cd sim && make AUTOBOOT=1 COCOTB_TEST_FILTER=test_button_held_stays'
       - uses: actions/upload-artifact@v6
         if: always()
         with:
