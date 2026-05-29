@@ -25,20 +25,26 @@ jobs:
 
   # Synthesise + place & route each board's bitstream.
   gateware:
-    name: Build gateware (${{ matrix.board }})
+    name: Build gateware (${{ matrix.board }}, ${{ matrix.backend }})
     needs: setup
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        board: [tinyfpga_bx, orangecrab, ecpbreaker, butterstick]
+        include:
+          - { board: tinyfpga_bx, backend: all }
+          - { board: orangecrab,  backend: all }
+          - { board: ecpbreaker,  backend: all }
+          - { board: butterstick, backend: all }
+          - { board: fomu,        backend: uf2 }
+          - { board: fomu,        backend: dfu }
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-nix
-      - run: nix develop -c python build.py --board ${{ matrix.board }} --backend all
+      - run: nix develop -c python build.py --board ${{ matrix.board }} --backend ${{ matrix.backend }}
       - uses: actions/upload-artifact@v6
         with:
-          name: gateware-${{ matrix.board }}
+          name: gateware-${{ matrix.board }}-${{ matrix.backend }}
           # iCE40 emits top.bin (+ multiboot.bin); ECP5 emits top.bit.
           path: |
             build/top.bin
