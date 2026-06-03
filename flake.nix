@@ -50,6 +50,8 @@
           cocotb-coverage
           pytest
           pytest-asyncio
+          pyusb
+          uuid6
         ]);
 
         # iCE40 + ECP5 FOSS toolchains
