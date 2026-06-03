@@ -115,6 +115,8 @@ class SPIFlashModel:
         self.uid    = uid
         self.jedec_id = jedec_id
         self.security_data = security_data
+        # Writable 256-byte security register (0x48 read / 0x42 prog / 0x44 erases)
+        self.security_mem = (bytearray(security_data) + bytearray(b"\xFF" * 256))[:256]
         self._cs_idle   = 1
         self._cs_active = 0
         self.transactions: list[FlashTransaction] = []
@@ -167,6 +169,10 @@ class SPIFlashModel:
                 await self._cmd_read_jedec(tx, cs_idle)
             elif tx.opcode == 0x48:
                 await self._cmd_read_security_register(tx, cs_idle)
+            elif tx.opcode == 0x42:
+                await self._cmd_program_security(tx, cs_idle)
+            elif tx.opcode == 0x44:
+                await self._cmd_erase_security(tx, cs_idle)
             elif tx.opcode == 0x06:
                 self.status |= 0x02        # WEL
                 tx.read_data = b""
@@ -231,7 +237,7 @@ class SPIFlashModel:
 
         async def stream():
             i = 0
-            data = self.security_data
+            data = self.security_mem
             while True:
                 byte = data[i] if i < len(data) else 0xFF
                 await self._shift_out(bytes([byte]), lanes=1)
@@ -242,6 +248,38 @@ class SPIFlashModel:
         await cs_idle
         task.cancel()
         tx.read_data = bytes(out)
+
+    async def _cmd_program_security(self, tx: FlashTransaction, cs_idle):
+        # 0x42 [3 address bytes] [data ...] -> program (bit-clear) the
+        # security register from offset 0 (address modelled as register-local).
+        addr_bytes = await self._shift_in_bytes(3, lanes=1)
+        tx.address = (addr_bytes[0] << 16) | (addr_bytes[1] << 8) | addr_bytes[2]
+        data = bytearray()
+
+        async def stream():
+            while True:
+                data.append(await self._shift_in(8, lanes=1))
+
+        task = cocotb.start_soon(stream())
+        await cs_idle
+        task.cancel()
+        tx.write_data = bytes(data)
+        if self.status & 0x02:                      # WEL must be set
+            for i, b in enumerate(data):
+                if i < len(self.security_mem):
+                    self.security_mem[i] &= b        # programming only clears bits
+            self.status &= ~0x02
+            self._wip_remaining = self.wip_polls_after_write
+
+    async def _cmd_erase_security(self, tx: FlashTransaction, cs_idle):
+        # 0x44 [3 address bytes] -> erase the security register to 0xFF.
+        addr_bytes = await self._shift_in_bytes(3, lanes=1)
+        tx.address = (addr_bytes[0] << 16) | (addr_bytes[1] << 8) | addr_bytes[2]
+        await cs_idle
+        if self.status & 0x02:                       # WEL must be set
+            self.security_mem = bytearray(b"\xFF" * 256)
+            self.status &= ~0x02
+            self._wip_remaining = self.wip_polls_after_write
 
     async def _cmd_read_status(self, tx: FlashTransaction, cs_idle):
         # Drive status until CS# rises (host may clock as many bytes as it wants).
