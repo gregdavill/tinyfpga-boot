@@ -100,7 +100,7 @@ class VendorSpiHandler(USBRequestHandler):
                 with m.If(self.qo.valid & self.qo.ready):
                     m.d.comb += widx_next.eq(widx + 1)
                     m.d.usb += widx.eq(widx_next)
-                with m.If(widx == wlen):
+                with m.If(widx_next == wlen):
                     with m.If(rlen != 0):
                         m.next = "SHIFT_R_REQ"
                     with m.Else():
@@ -206,6 +206,7 @@ class VendorSpiHandler(USBRequestHandler):
                 m.d.comb += interface.claim.eq(1)
                 with m.If(interface.data_requested):
                     m.d.usb += in_packet.eq(0)
+                    m.d.comb += r_rd.addr.eq(pos)
                     m.next = "RESULT_STREAM"
                 with m.If(interface.status_requested):
                     m.d.comb += interface.handshakes_out.ack.eq(1)
@@ -226,7 +227,7 @@ class VendorSpiHandler(USBRequestHandler):
                     tx.last.eq(packet_last),
                 ]
                 with m.If(tx.valid & tx.ready):
-                    m.d.comb += pos_next.eq(pos + 1),
+                    m.d.comb += pos_next.eq(pos + 1)
                     with m.If(transfer_last):
                         m.next = "RESULT_CLAIM"
                     with m.Elif(in_packet == self._MPS - 1):
