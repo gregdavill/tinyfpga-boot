@@ -432,9 +432,19 @@ class USBHost:
             len(data) & 0xFF, (len(data) >> 8) & 0xFF,
         ])
         await self.transaction_setup(self.address, 0, setup)
-        # Data stage - TODO: chunk per bMaxPacketSize0
-        if data:
-            await self.transaction_out(self.address, 0, data, data_pid=PID.DATA1)
+        # Data stage - split into bMaxPacketSize0 packets with the PID toggling
+        # DATA1, DATA0, ... (USB 2.0 §8.5.3); retry a NAKing endpoint.
+        toggle = PID.DATA1
+        mps = self.max_packet0
+        for off in range(0, len(data), mps):
+            chunk = data[off:off + mps]
+            for _ in range(max_retries):
+                if await self.transaction_out(self.address, 0, chunk, data_pid=toggle):
+                    break
+                await Timer(self.bit_ns * 4, unit="ns")
+            else:
+                raise RuntimeError("control_out: OUT data chunk NAKed repeatedly")
+            toggle = PID.DATA0 if toggle is PID.DATA1 else PID.DATA1
         # Status stage - zero-length IN DATA1
         await self._retry_in(self.address, 0, expected_pid=PID.DATA1)
 
