@@ -187,7 +187,7 @@ class Top(Elaboratable):
             m,
             arm=rc.arm | por_boot,
             activity=rc.activity,
-            reset=usb.reset_detected,
+            reset=usb.connect & usb.reset_detected,
             slot=reload_slot,
             idle_cycles=reload_idle,
         )
