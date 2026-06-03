@@ -17,7 +17,11 @@ def build(config, *, build_dir="build", do_program=False):
         bootaddr = config.reload_image_offset
         config.platform().build(
             Top(config), name="top", build_dir=str(out), do_program=do_program,
-            ecppack_opts=f"--bootaddr {bootaddr:#x}",
+            ecppack_opts=(
+                f"--bootaddr {bootaddr:#x} "
+                "--compress "
+                "--spimode qspi --freq 38.8"
+            ),
         )
 
         # The bootloader bitstream lives at flash 0x0; the user image lands at
