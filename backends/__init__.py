@@ -14,10 +14,22 @@ primitive consumes.
 
 from collections import namedtuple
 
+from amaranth import Signal
+from amaranth.lib import enum
+
 from config import Backend as BackendKind
 
 
 Reconfig = namedtuple("Reconfig", ["arm", "activity"])
+
+
+class Status(enum.Enum, shape=2):
+    """Coarse backend activity, for board status indicator
+    """
+    IDLE   = 0  #: enumerated, waiting for a transfer
+    ACTIVE = 1  #: transfer in progress
+    DONE   = 2  #: transfer complete, reload pending
+    ERROR  = 3  #: protocol/decode fault
 
 
 class Backend:
@@ -32,6 +44,8 @@ class Backend:
         #: QSPI-facing streams, populated by `build()`.
         self.qo = None
         self.qi = None
+        #: activity state
+        self.status = Signal(Status)
 
     def populate_configuration(self, c, *, bulk_mps):
         """Add this backend's interface + endpoint descriptors to a

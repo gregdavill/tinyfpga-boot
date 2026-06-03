@@ -9,7 +9,7 @@ interface #0 with an unused interrupt-IN notification endpoint, + Data
 interface #1 with the bulk pair).
 """
 
-from amaranth import ResetInserter
+from amaranth import ResetInserter, Signal
 from amaranth.lib import wiring
 
 from usb_protocol.emitters.descriptors import cdc
@@ -18,7 +18,7 @@ from luna.gateware.usb.devices.acm import ACMRequestHandlers
 from blocks.luna_wrapper import USBStreamInEndpoint, USBStreamOutEndpoint
 from blocks.spi_bridge import SpiBridge
 
-from . import Backend, Reconfig
+from . import Backend, Reconfig, Status
 
 
 class SerialBridgeBackend(Backend):
@@ -117,6 +117,20 @@ class SerialBridgeBackend(Backend):
 
         wiring.connect(m, ep_out=self.data_out_ep.o, bridge=bridge.rx)
         wiring.connect(m, ep_in=self.data_in_ep.i,  bridge=bridge.tx)
+
+        # `bridge.boot` is a 1-cycle pulse; latch it so the indicator can hold
+        # DONE through the reboot window.
+        booted = Signal()
+        with m.If(usb.reset_detected):
+            m.d.sync += booted.eq(0)
+        with m.Elif(bridge.boot):
+            m.d.sync += booted.eq(1)
+
+        # Status: DONE (boot command) > ACTIVE (bridge traffic) > IDLE.
+        with m.If(booted):
+            m.d.comb += self.status.eq(Status.DONE)
+        with m.Elif(bridge.activity):
+            m.d.comb += self.status.eq(Status.ACTIVE)
 
         # QSPI bus: Top muxes these against the serial source inside USB-CONNECT.
         self.qo = bridge.qo

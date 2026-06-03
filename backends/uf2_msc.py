@@ -13,7 +13,7 @@ from blocks.scsi import SCSIHandler, MassStorageRequestHandler
 from blocks.uf2 import UF2Decoder
 from blocks.flash import QspiFlash
 
-from . import Backend, Reconfig
+from . import Backend, Reconfig, Status
 
 
 class Uf2MscBackend(Backend):
@@ -92,6 +92,14 @@ class Uf2MscBackend(Backend):
             # once the bus comes back up.
             uf2.clear.eq(scsi.clear_decoder | usb.reset_detected),
         ]
+
+        # Status: ERROR (bad UF2) > DONE (decode, reload) > ACTIVE (USB traffic) > IDLE (default).
+        with m.If(uf2.error):
+            m.d.comb += self.status.eq(Status.ERROR)
+        with m.Elif(uf2.done):
+            m.d.comb += self.status.eq(Status.DONE)
+        with m.Elif(scsi.rx.valid | scsi.tx.valid | flash.qo.valid):
+            m.d.comb += self.status.eq(Status.ACTIVE)
 
         # QSPI bus: Top muxes these against the serial source inside USB-CONNECT.
         self.qo = flash.qo
