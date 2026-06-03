@@ -394,7 +394,8 @@ class USBHost:
 
     async def control_in(self, bm_request_type: int, b_request: int,
                          w_value: int = 0, w_index: int = 0,
-                         w_length: int = 0) -> bytes:
+                         w_length: int = 0, max_retries: int = 10) -> bytes:
+        # `max_retries` bounds how long we tolerate a NAKing endpoint per IN token
         _cov_sample_request(bm_request_type, b_request)
         setup = bytes([
             bm_request_type, b_request,
@@ -410,7 +411,8 @@ class USBHost:
         remaining = w_length
         max_packet = self.max_packet0   # updated by `set_address`/descriptor reads
         while remaining > 0:
-            payload = await self._retry_in(self.address, 0, expected_pid=toggle_pid)
+            payload = await self._retry_in(self.address, 0, expected_pid=toggle_pid,
+                                           max_retries=max_retries)
             received.extend(payload)
             remaining -= len(payload)
             if len(payload) < max_packet:
@@ -423,7 +425,8 @@ class USBHost:
 
     async def control_out(self, bm_request_type: int, b_request: int,
                           w_value: int = 0, w_index: int = 0,
-                          data: bytes = b""):
+                          data: bytes = b"", max_retries: int = 10):
+        # `max_retries` bounds the status-stage IN wait
         _cov_sample_request(bm_request_type, b_request)
         setup = bytes([
             bm_request_type, b_request,
@@ -446,7 +449,8 @@ class USBHost:
                 raise RuntimeError("control_out: OUT data chunk NAKed repeatedly")
             toggle = PID.DATA0 if toggle is PID.DATA1 else PID.DATA1
         # Status stage - zero-length IN DATA1
-        await self._retry_in(self.address, 0, expected_pid=PID.DATA1)
+        await self._retry_in(self.address, 0, expected_pid=PID.DATA1,
+                             max_retries=max_retries)
 
     async def _retry_in(self, addr, endpoint, *, expected_pid, max_retries: int = 10):
         for _ in range(max_retries):
