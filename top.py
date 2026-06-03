@@ -12,6 +12,7 @@ from blocks.qspi import Controller
 from blocks.serial_source import FlashUidSerialSource, SecurityPageSerialSource
 from blocks.status_led import MonoStatusLed, RgbStatusLed
 from blocks.usb.serial_handler import USBStreamSerialDescriptorHandler
+from blocks.usb.vendor_spi import VendorSpiHandler
 
 from backends import BACKENDS
 from staysource import NoValidAppStaySource
@@ -49,6 +50,9 @@ class Top(Elaboratable):
         self.descriptors = self.create_descriptors(hs)
         self.serial_handler = USBStreamSerialDescriptorHandler(
             self.descriptor_iSerialNumber, max_len=self.serial_source.max_len)
+
+        # --- Vendor EP0 bridge ---
+        self.vendor_spi = VendorSpiHandler()
 
     def create_descriptors(self, hs):
         """ Create the descriptors we want to use for our device. The device
@@ -156,6 +160,7 @@ class Top(Elaboratable):
         ep = usb.add_standard_control_endpoint(
             self.descriptors, skiplist=[self.serial_handler.handler_condition])
         ep.add_request_handler(self.serial_handler)
+        ep.add_request_handler(self.vendor_spi)
         for handler in self.backend.request_handlers():
             ep.add_request_handler(handler)
         m.d.comb += [
@@ -262,8 +267,15 @@ class Top(Elaboratable):
             with m.State('USB-CONNECT'):
                 m.d.comb += usb.connect.eq(1)
 
-                # Hand the QSPI bus to the backend's datapath.
-                wiring.connect(m, self.backend.qo, qspi.i)
-                wiring.connect(m, self.backend.qi, qspi.o)
+                # Share the QSPI bus: the vendor EP0 bridge grabs it while a
+                # provisioning burst is in flight, otherwise the backend's
+                # datapath owns it (the two are never busy at once).
+                vs = self.vendor_spi
+                with m.If(vs.active):
+                    wiring.connect(m, vs.qo, qspi.i)
+                    wiring.connect(m, qspi.o, vs.qi)
+                with m.Else():
+                    wiring.connect(m, self.backend.qo, qspi.i)
+                    wiring.connect(m, self.backend.qi, qspi.o)
 
         return m
