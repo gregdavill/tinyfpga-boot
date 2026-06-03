@@ -60,6 +60,10 @@ class BoardConfig:
     serial_source: SerialSource = SerialSource.FLASH_UID
     backend: Backend = Backend.UF2_MSC
 
+    # SECURITY_PAGE read address is flash-family specific: the SecurityPage
+    # reader uses addr = 1 << (8 + this).
+    security_page_addr_offset_bits: int = 0
+
     # SB_WARMBOOT slot to reload after a complete UF2 transfer.
     reload_slot: int = 1
     # Flash byte offset of the slot's image region. The host's UF2 carries

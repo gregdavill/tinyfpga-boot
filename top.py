@@ -26,10 +26,11 @@ class Top(Elaboratable):
 
         # --- Serial-number source (selected by config) ---
         kind = config.serial_source if config else SerialSource.FLASH_UID
-        self.serial_source = {
-            SerialSource.SECURITY_PAGE: SecurityPageSerialSource,
-            SerialSource.FLASH_UID:     FlashUidSerialSource,
-        }[kind]()
+        if kind == SerialSource.SECURITY_PAGE:
+            self.serial_source = SecurityPageSerialSource(
+                addr_offset_bits=config.security_page_addr_offset_bits if config else 0)
+        else:
+            self.serial_source = FlashUidSerialSource()
 
         # --- USB personality (the active backend), selected by config ---
         self.backend = BACKENDS[config.backend](config, hs=hs)

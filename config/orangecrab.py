@@ -48,6 +48,9 @@ board = BoardConfig(
     scsi_vendor="ORANGE",
     scsi_product="UF2 Bootloader",
     serial_source=SerialSource.SECURITY_PAGE,
+    # W25Q128 security registers are at 0x1000/0x2000/0x3000 (register 1 by
+    # default); 1 << (8 + 4) = 0x1000. Matches tools/program_security_page.py.
+    security_page_addr_offset_bits=4,
     reload_slot=1,
     reload_image_offset=SLOT1_OFFSET,
     stay_sources=(ButtonStaySource, WriteEnableStaySource),

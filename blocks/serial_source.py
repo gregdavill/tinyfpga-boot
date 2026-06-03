@@ -71,8 +71,15 @@ class SecurityPageSerialSource(_SerialSource):
 
     max_len = 36  # canonical UUID length
 
+    def __init__(self, *, addr_offset_bits=0):
+        # Security-register address is flash-family specific (see
+        # SecurityPage): addr = page << (8 + addr_offset_bits).
+        self._addr_offset_bits = addr_offset_bits
+        super().__init__()
+
     def _chain(self, m):
-        m.submodules.reader = reader = SecurityPage()
+        m.submodules.reader = reader = SecurityPage(
+            addr_offset_bits=self._addr_offset_bits)
         m.submodules.parser = parser = JsonStringKeyParser(key=b"uuid")
         connect(m, reader.data, parser.i)
         # `done` stops the page read as soon as the value is captured.
