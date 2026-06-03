@@ -129,17 +129,9 @@ CMD := $(PWD)/iverilog_quiet.sh
 # the outer one. cocotb's Makefile.sim handles that via TOPLEVEL above.
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-# Convenience: emit Verilog as part of `make`. The blocks that feed the
-# serial source are prerequisites so a change re-elaborates the DUT.
-$(SIM_TOP_V): elaborate.py cocotb_platform.py cocotb_hs_platform.py ../top.py \
-		../platforms.py ../config/__init__.py ../config/tinyfpga_bx.py \
-		../config/ecpbreaker.py \
-		../blocks/security_page.py ../blocks/json_key_parser.py \
-		../blocks/usb/serial_handler.py ../blocks/spi_bridge.py \
-		../backends/__init__.py ../backends/uf2_msc.py ../backends/serial_bridge.py \
-		../staysource/__init__.py ../staysource/button.py \
-		../staysource/no_valid_app.py ../staysource/write_enable.py \
-		| $(PWD)/build
+# Rebuild DUT verilog
+.PHONY: FORCE
+$(SIM_TOP_V): FORCE | $(PWD)/build
 	python elaborate.py --board $(ELAB_BOARD) --serial-source $(SERIAL_SOURCE) \
 		--backend $(BACKEND) $(AUTOBOOT_FLAG) --out $@
 
