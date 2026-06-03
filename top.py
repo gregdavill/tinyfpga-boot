@@ -130,11 +130,13 @@ class Top(Elaboratable):
             # reachable only via the USRMCLK primitive.
             flash_io = platform.request('spi_flash_4x', dir='-')
             flash_clk = io.SimulationPort("o", 1)
+            clk_o = Signal()
+            m.d.sync += clk_o.eq(flash_clk.o)
             qspi_ports = PortGroup(cs=flash_io.cs, clk=flash_clk, dq=flash_io.dq)
             m.submodules.qspi = qspi = Controller(qspi_ports, chip_count=1, offset=0)
             m.submodules.usrmclk = Instance(
                 "USRMCLK",
-                i_USRMCLKI=flash_clk.o,      # fabric SPI clock -> config flash CCLK
+                i_USRMCLKI=clk_o,      # fabric SPI clock -> config flash CCLK
                 i_USRMCLKTS=Const(0),        # 0 = drive the clock (not tri-stated)
             )
         else:
