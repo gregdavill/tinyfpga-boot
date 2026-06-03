@@ -93,6 +93,7 @@ class SPIFlashModel:
                  security_data: bytes = (
                      b'{"boardmeta": {"name": "TinyFPGA BX", '
                      b'"uuid": "CAFEBABE-DEAD-BEEF-0123-456789ABCDEF"}}'),
+                 jedec_id: bytes = b"\xEF\x40\x18",   # W25Q128: Winbond/SPI/128Mbit
                  wip_polls_after_write: int = 0, pins=None):
         """`wip_polls_after_write` simulates a flash that holds WIP=1 for
         N status reads after each page-program or sector-erase before
@@ -112,6 +113,7 @@ class SPIFlashModel:
         self.size   = size
         self.memory = bytearray(b"\xFF" * size)
         self.uid    = uid
+        self.jedec_id = jedec_id
         self.security_data = security_data
         self._cs_idle   = 1
         self._cs_active = 0
@@ -161,6 +163,8 @@ class SPIFlashModel:
         try:
             if tx.opcode == 0x4B:
                 await self._cmd_read_uid(tx, cs_idle)
+            elif tx.opcode == 0x9F:
+                await self._cmd_read_jedec(tx, cs_idle)
             elif tx.opcode == 0x48:
                 await self._cmd_read_security_register(tx, cs_idle)
             elif tx.opcode == 0x06:
@@ -191,6 +195,23 @@ class SPIFlashModel:
     # ------------------------------------------------------------------
     # Command handlers
     # ------------------------------------------------------------------
+
+    async def _cmd_read_jedec(self, tx: FlashTransaction, cs_idle):
+        # 0x9F [mfr] [mem type] [capacity] ... (no address, no dummy).
+        out = bytearray()
+
+        async def stream():
+            i = 0
+            while True:
+                b = self.jedec_id[i] if i < len(self.jedec_id) else 0x00
+                await self._shift_out(bytes([b]), lanes=1)
+                out.append(b)
+                i += 1
+
+        task = cocotb.start_soon(stream())
+        await cs_idle
+        task.cancel()
+        tx.read_data = bytes(out)
 
     async def _cmd_read_uid(self, tx: FlashTransaction, cs_idle):
         # 0x4B [4 dummy bytes] [8 UID bytes out]
