@@ -6,7 +6,7 @@ from amaranth.vendor import LatticeECP5Platform
 from amaranth_boards.resources import *
 
 from platforms import ECP5Mixin
-from config import BoardConfig, SerialSource, SLOT1_OFFSET
+from config import BoardConfig, SerialSource, ECP5_SLOT1_OFFSET
 from staysource import ButtonStaySource, WriteEnableStaySource
 
 class ECPBreakerR3_0Platform(ECP5Mixin, LatticeECP5Platform):
@@ -97,6 +97,6 @@ board = BoardConfig(
     scsi_product="UF2 Bootloader",
     serial_source=SerialSource.FLASH_UID,
     reload_slot=1,
-    reload_image_offset=SLOT1_OFFSET,
+    reload_image_offset=ECP5_SLOT1_OFFSET,
     stay_sources=(ButtonStaySource, WriteEnableStaySource),
 )

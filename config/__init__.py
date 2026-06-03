@@ -19,6 +19,10 @@ from dataclasses import dataclass
 MULTIBOOT_ALIGN_BITS = 18                        # 256 KiB slots
 SLOT1_OFFSET         = 1 << MULTIBOOT_ALIGN_BITS  # 0x40000
 
+# ECP5 use `--bootaddr` points at slot 1 directly. An ECP5 bitstream can be MiB-scale.
+# Give each slot 2 MiB.
+ECP5_SLOT1_OFFSET = 0x200000  # 2 MiB
+
 
 class SerialSource(enum.Enum):
     """Where the USB iSerialNumber comes from."""

@@ -5,7 +5,7 @@ from amaranth.build import Resource, Subsignal, Pins, PinsN, Attrs
 from amaranth_boards.orangecrab_r0_2 import OrangeCrabR0_2Platform as _OrangeCrabBase
 
 from platforms import ECP5Mixin
-from config import BoardConfig, SerialSource, SLOT1_OFFSET
+from config import BoardConfig, SerialSource, ECP5_SLOT1_OFFSET
 from staysource import ButtonStaySource, WriteEnableStaySource
 
 class OrangeCrabR0_2ULPIPlatform(ECP5Mixin, _OrangeCrabBase):
@@ -52,6 +52,6 @@ board = BoardConfig(
     # default); 1 << (8 + 4) = 0x1000. Matches tools/program_security_page.py.
     security_page_addr_offset_bits=4,
     reload_slot=1,
-    reload_image_offset=SLOT1_OFFSET,
+    reload_image_offset=ECP5_SLOT1_OFFSET,
     stay_sources=(ButtonStaySource, WriteEnableStaySource),
 )

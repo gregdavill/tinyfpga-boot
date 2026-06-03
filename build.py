@@ -19,8 +19,22 @@ def build(config, *, build_dir="build", do_program=False):
             Top(config), name="top", build_dir=str(out), do_program=do_program,
             ecppack_opts=f"--bootaddr {bootaddr:#x}",
         )
+
+        # The bootloader bitstream lives at flash 0x0; the user image lands at
+        # reload_image_offset. If the bootstream is larger than that offset the
+        # image region overlaps (and corrupts) the bootloader, so refuse it.
+        boot_bit = out / "top.bit"
+        boot_size = boot_bit.stat().st_size
+        if boot_size > config.reload_image_offset:
+            raise SystemExit(
+                f"bootloader bitstream is {boot_size:#x} bytes, larger than the "
+                f"slot-1 offset {config.reload_image_offset:#x} - the user image "
+                f"region would overlap and corrupt the bootloader. Increase "
+                f"reload_image_offset (config.ECP5_SLOT1_OFFSET)."
+            )
+
         print(f"built {out}/top")
-        return out / "top.bit"
+        return boot_bit
 
     if config.reload_slot == 1 and config.reload_image_offset != SLOT1_OFFSET:
         raise SystemExit(
