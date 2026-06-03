@@ -55,8 +55,10 @@ class Backend:
 
 from .uf2_msc import Uf2MscBackend              # noqa: E402
 from .serial_bridge import SerialBridgeBackend  # noqa: E402
+from .dfu import DfuBackend                      # noqa: E402
 
 BACKENDS = {
     BackendKind.UF2_MSC:         Uf2MscBackend,
     BackendKind.TINYFPGA_SERIAL: SerialBridgeBackend,
+    BackendKind.DFU:             DfuBackend,
 }

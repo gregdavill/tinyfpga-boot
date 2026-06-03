@@ -35,6 +35,8 @@ class Backend(enum.Enum):
     UF2_MSC = "uf2"
     #: TinyFPGA CDC-ACM serial USB->SPI bridge
     TINYFPGA_SERIAL = "serial"
+    #: USB DFU 1.1 download over EP0
+    DFU = "dfu"
 
 
 @dataclass

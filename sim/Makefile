@@ -26,8 +26,9 @@ TARGET ?= fs
 # for path suffixing on fs). See BoardConfig / elaborate.py.
 SERIAL_SOURCE ?= flash_uid
 
-# USB personality baked into the DUT: `uf2` (default, Mass-Storage / UF2) or
-# `serial` (TinyFPGA tinyprog CDC-ACM bridge). See BoardConfig / elaborate.py.
+# USB personality baked into the DUT: `uf2` (default, Mass-Storage / UF2),
+# `serial` (TinyFPGA tinyprog CDC-ACM bridge) or `dfu` (USB DFU 1.1 download).
+# See BoardConfig / elaborate.py.
 BACKEND ?= uf2
 
 # `AUTOBOOT=1` builds the FS DUT with auto-boot enabled (button + WEL stay
@@ -68,6 +69,10 @@ else ifeq ($(BACKEND),serial)
 COCOTB_TEST_MODULES ?= cocotb_tests.test_serial_bridge
 SIM_TOP_V := $(PWD)/build/sim_top_serial.v
 SIM_BUILD := $(PWD)/build/sim_$(SIM)_serial
+else ifeq ($(BACKEND),dfu)
+COCOTB_TEST_MODULES ?= cocotb_tests.test_dfu
+SIM_TOP_V := $(PWD)/build/sim_top_dfu.v
+SIM_BUILD := $(PWD)/build/sim_$(SIM)_dfu
 else ifeq ($(SERIAL_SOURCE),flash_uid)
 COCOTB_TEST_MODULES ?= cocotb_tests.test_bootloader
 SIM_TOP_V := $(PWD)/build/sim_top.v
