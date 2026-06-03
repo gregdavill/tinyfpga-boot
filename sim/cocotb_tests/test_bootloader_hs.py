@@ -21,7 +21,7 @@ from .usb_packets import build_sof
 from . import coverage as _cov
 from .test_bootloader import (
     DESC_DEVICE, DESC_CONFIGURATION,
-    SCSI_WRITE_10, _build_cbw, _build_uf2_block, _phys,
+    SCSI_WRITE_10, _build_cbw, _build_uf2_block,
 )
 
 
@@ -29,6 +29,12 @@ DESC_DEVICE_QUALIFIER = 0x06
 DESC_OTHER_SPEED      = 0x07
 
 HS_BULK_MPS = 512
+
+RELOAD_IMAGE_OFFSET = 0x200000
+
+def _phys(logical_addr: int) -> int:
+    """Logical UF2 address -> physical flash address."""
+    return logical_addr + RELOAD_IMAGE_OFFSET
 
 # Per-test sim-time budgets (µs). HS bring-up includes the ULPI Tstart + the
 # chirp handshake (shortened in elaborate.py), plus the boot UID read.
