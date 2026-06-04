@@ -42,6 +42,7 @@ def _dfu_functional_descriptor(*, transfer_size, detach_timeout_ms=1000):
 
 class DfuBackend(Backend):
     device_class = (0, 0, 0)
+    personality = "DFU"
 
     _IF_NUM = 0
 

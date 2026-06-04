@@ -24,6 +24,7 @@ from . import Backend, Reconfig, Status
 class SerialBridgeBackend(Backend):
     # Composite device using an Interface Association Descriptor.
     device_class = (0xEF, 0x02, 0x01)
+    personality = "SerialBoot"
 
     _NOTIFY_EP = 2   # interrupt IN (declared, never driven)
     _DATA_EP   = 1   # bulk IN/OUT

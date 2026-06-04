@@ -89,7 +89,6 @@ board = BoardConfig(
     vid=0x1209,
     pid=0x5af0,
     manufacturer="GsD/GroupGets",
-    product="UF2 Bootloader",
     board_id="ecpbreaker-r3.0",
     model="ECPBreaker r3.0",
     url="https://gregdavill.com",

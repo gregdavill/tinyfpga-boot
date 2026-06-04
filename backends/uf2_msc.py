@@ -18,6 +18,7 @@ from . import Backend, Reconfig, Status
 
 class Uf2MscBackend(Backend):
     device_class = (0, 0, 0)
+    personality = "UF2"
 
     def __init__(self, config, *, hs):
         super().__init__(config, hs=hs)

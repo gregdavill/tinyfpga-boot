@@ -41,7 +41,6 @@ board = BoardConfig(
     vid=0x1209,
     pid=0x5af0,
     manufacturer="GsD/GroupGets",
-    product="UF2 Bootloader",
     board_id="OrangeCrab-r0.2",
     model="OrangeCrab r0.2",
     url="https://orangecrab-fpga.github.io",

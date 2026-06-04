@@ -54,7 +54,6 @@ class BoardConfig:
     vid: int
     pid: int
     manufacturer: str
-    product: str
     board_id: str
     model: str
     url: str

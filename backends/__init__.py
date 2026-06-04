@@ -37,6 +37,8 @@ class Backend:
     usb_ids = (0x1209, 0x5af0)
     #: (bDeviceClass, bDeviceSubclass, bDeviceProtocol).
     device_class = (0, 0, 0)
+    #: USB descriptor iProduct becomes "<board model> (<personality>)".
+    personality = "Bootloader"
 
     def __init__(self, config, *, hs):
         self.config = config

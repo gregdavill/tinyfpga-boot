@@ -80,7 +80,8 @@ class Top(Elaboratable):
             d.bMaxPacketSize0    = 64
 
             d.iManufacturer      = self.config.manufacturer if self.config else "TinyFPGA"
-            d.iProduct           = self.config.product if self.config else "Bootloader"
+            model                = self.config.model if self.config else "Bootloader"
+            d.iProduct           = f"{model} ({self.backend.personality})"
             d.iSerialNumber      = ""
 
             d.bNumConfigurations = 1

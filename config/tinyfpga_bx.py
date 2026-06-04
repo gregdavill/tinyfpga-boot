@@ -43,7 +43,6 @@ board = BoardConfig(
     vid=0x1209,
     pid=0x5af0,
     manufacturer="TinyFPGA",
-    product="Bootloader",
     board_id="TinyFPGA-BX-v1",
     model="TinyFPGA BX",
     url="https://tinyfpga.com",

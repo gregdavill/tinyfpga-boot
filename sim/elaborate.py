@@ -119,7 +119,7 @@ def _fs_sim_config(serial_source, backend, autoboot=False):
         name="sim",
         platform=CocotbPlatform,
         vid=0x1209, pid=0x5AF0,
-        manufacturer="TinyFPGA", product="Bootloader",
+        manufacturer="TinyFPGA",
         board_id="TinyFPGA-BX-v1", model="TinyFPGA BX",
         url="https://tinyfpga.com",
         scsi_vendor="TINYFPGA", scsi_product="UF2 Bootloader",
