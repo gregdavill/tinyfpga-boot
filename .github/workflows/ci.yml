@@ -91,3 +91,12 @@ jobs:
           blocks.qspi blocks.scsi blocks.uf2 blocks.spi_bridge
           blocks.security_page blocks.json_key_parser blocks.hex_encoder
           staysource.no_valid_app staysource.write_enable
+
+  formal:
+    name: Formal verification
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-nix
+      - run: nix develop -c bash -c 'cd formal && make'

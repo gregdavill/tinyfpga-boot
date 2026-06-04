@@ -67,10 +67,15 @@
         simTools = with pkgs; [
           iverilog
         ];
+
+        formalTools = with pkgs; [
+          sby
+          yices
+        ];
       in
       {
         devShells.default = pkgs.mkShell {
-          packages = [ python ] ++ fpgaTools ++ simTools ++ (with pkgs; [
+          packages = [ python ] ++ fpgaTools ++ simTools ++ formalTools ++ (with pkgs; [
             git
             gnumake
           ]);
