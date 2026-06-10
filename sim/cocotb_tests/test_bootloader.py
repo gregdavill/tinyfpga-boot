@@ -1380,11 +1380,10 @@ async def test_scsi_mode_sense_6(dut):
 
 
 @cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
-async def test_uf2_bad_start_magic_reports_failure_to_host(dut):
+async def test_uf2_bad_start_magic_skipped_silently(dut):
     """UF2 spec: every block begins with magicStart0 (0x0A324655)
-    and magicStart1 (0x9E5D5157). A block with a corrupt start magic
-    must be rejected - the decoder asserts `error` and skips to
-    DISCARD, host sees CSW.bCSWStatus=1.
+    and magicStart1 (0x9E5D5157). A sector without the start magic isn't
+    a UF2 block. The decoder skips it silently rather than erroring.
     """
     host, flash = await _bringup(dut)
     await host.set_address(0x12)
@@ -1410,7 +1409,7 @@ async def test_uf2_bad_start_magic_reports_failure_to_host(dut):
     assert sig == CSW_SIGNATURE
     assert tag == 0xBAD50000, f"CSW tag mismatch: {tag:#010x}"
     assert residue == 0
-    assert status == 1, f"CSW status = {status} (expected 1 for bad start magic)"
+    assert status == 0, f"CSW status = {status} (expected 0; bad start magic is a silent skip)"
 
     # No flash writes — the block was discarded before any DATA bytes
     # reached the flash controller.

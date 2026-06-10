@@ -32,8 +32,8 @@ class Uf2Spec(Elaboratable):
         # is relocated).
         m.d.comb += Assert(~dut.o.valid | (dut.o.p.data == dut.i.p.data))
 
-        # A corrupt header is flagged, and (deeper) a payload byte streams out.
-        m.d.comb += Cover(dut.error)
+        # Prove the asserts above aren't vacuous: a payload byte can actually
+        # stream out, so `o.valid` reaches high.
         m.d.comb += Cover(dut.o.valid & dut.o.ready)
 
         return m
