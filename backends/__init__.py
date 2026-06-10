@@ -39,6 +39,8 @@ class Backend:
     device_class = (0, 0, 0)
     #: USB descriptor iProduct becomes "<board model> (<personality>)".
     personality = "Bootloader"
+    #: Dual-bank `cfg_ctrl` default (0 = FLASH)
+    cfg_ctrl_o = 0
 
     def __init__(self, config, *, hs):
         self.config = config
