@@ -6,13 +6,22 @@ from amaranth.lib.wiring import In, Out
 from datetime import datetime
 
 SECTOR_SIZE = 512
-SECTORS_PER_CLUSTER = 1
+SECTORS_PER_CLUSTER = 4
 RESERVED_SECTORS = 1
 NUM_FATS = 2
-SECTORS_PER_FAT = 1
+SECTORS_PER_FAT = 32
 ROOT_DIR_ENTRIES = 16
 ROOT_DIR_SECTORS = 1
-DATA_START_SECTOR = RESERVED_SECTORS + NUM_FATS * SECTORS_PER_FAT + ROOT_DIR_SECTORS  # 4
+
+FAT0_SECTOR     = RESERVED_SECTORS                                  # 1
+FAT1_SECTOR     = RESERVED_SECTORS + SECTORS_PER_FAT                # 33
+ROOT_DIR_SECTOR = RESERVED_SECTORS + NUM_FATS * SECTORS_PER_FAT     # 65
+DATA_START_SECTOR = ROOT_DIR_SECTOR + ROOT_DIR_SECTORS              # 66
+
+
+def _data_sector(cluster):
+    """First LBA of a data cluster (clusters are numbered from 2)."""
+    return DATA_START_SECTOR + (cluster - 2) * SECTORS_PER_CLUSTER
 
 _stream_layout = data.StructLayout({"data": 8})
 
@@ -138,11 +147,11 @@ class GhostFAT(wiring.Component):
 
         sectors = {
             0: _build_boot_sector(self.block_count),
-            1: _build_fat_sector(),
-            2: _build_fat_sector(),
-            3: _build_root_dir(len(info_data), len(index_data), build_time),
-            4: _build_file_sector(info_uf2_text),
-            5: _build_file_sector(index_htm_text),
+            FAT0_SECTOR: _build_fat_sector(),
+            FAT1_SECTOR: _build_fat_sector(),
+            ROOT_DIR_SECTOR: _build_root_dir(len(info_data), len(index_data), build_time),
+            _data_sector(2): _build_file_sector(info_uf2_text),
+            _data_sector(3): _build_file_sector(index_htm_text),
         }
 
         self._rom_data = []
@@ -238,7 +247,7 @@ async def read_sector(ctx, dut, lba):
 
 class TestGhostFAT(unittest.TestCase):
     def _make_dut(self):
-        return GhostFAT(block_count=64)
+        return GhostFAT(block_count=16 * 1024 * 1024 // 512)
 
     def test_boot_sector(self):
         dut = self._make_dut()
@@ -261,10 +270,13 @@ class TestGhostFAT(unittest.TestCase):
         dut = self._make_dut()
 
         async def testbench(ctx):
-            data = await read_sector(ctx, dut, 1)
+            data = await read_sector(ctx, dut, FAT0_SECTOR)
             # First 8 bytes: F8 FF FF FF FF FF FF FF
             expected = [0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
             assert data[:8] == expected, f"FAT: {[f'{b:#x}' for b in data[:8]]}"
+            # The second FAT copy must be byte-identical.
+            data2 = await read_sector(ctx, dut, FAT1_SECTOR)
+            assert data2 == data, "FAT copies differ"
 
         simulate(dut, testbench)
 
@@ -272,7 +284,7 @@ class TestGhostFAT(unittest.TestCase):
         dut = self._make_dut()
 
         async def testbench(ctx):
-            data = await read_sector(ctx, dut, 3)
+            data = await read_sector(ctx, dut, ROOT_DIR_SECTOR)
             # Volume label
             label = bytes(data[0:11]).decode("ascii")
             assert label == "UF2 BOOT   ", f"label: {label!r}"
@@ -309,7 +321,7 @@ class TestGhostFAT(unittest.TestCase):
         dut = self._make_dut()
 
         async def testbench(ctx):
-            data = await read_sector(ctx, dut, 4)
+            data = await read_sector(ctx, dut, _data_sector(2))
             text = bytes(data[:8]).decode("ascii")
             assert text == "TinyFPGA", f"text: {text!r}"
 
@@ -319,7 +331,8 @@ class TestGhostFAT(unittest.TestCase):
         dut = self._make_dut()
 
         async def testbench(ctx):
-            data = await read_sector(ctx, dut, 60)
+            # A free data cluster (not boot/FAT/root/file) reads back as zeros.
+            data = await read_sector(ctx, dut, _data_sector(100))
             assert all(b == 0 for b in data), "unknown LBA should return all zeros"
 
         simulate(dut, testbench)
