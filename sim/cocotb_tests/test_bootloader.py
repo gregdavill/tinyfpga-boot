@@ -277,6 +277,40 @@ async def test_uf2_write_triggers_program(dut):
 
 
 @cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
+async def test_non_uf2_write_succeeds(dut):
+    """A WRITE-10 carrying a non-UF2 sector. FAT/directory metadata that the OS
+    may write when copying a file onto the drive. Must return CSW status=0 but also
+    touch no flash."""
+    host, flash = await _bringup(dut)
+    await host.set_address(0x12)
+    await host.set_configuration(1)
+    flash.transactions.clear()
+
+    # A non UF2 magic sector, written to a low LBA
+    sector = bytearray(512)
+    sector[0:11] = b"\xEB\x3C\x90UF2 UF2 "
+
+    cdb = struct.pack(">BBIBHB", SCSI_WRITE_10, 0, 1, 0, 1, 0)
+    cbw = _build_cbw(tag=0x5A5A5A5A, transfer_length=512, flags=0x00, cb=cdb)
+
+    await host.bulk_out(endpoint=1, payload=cbw)
+    await host.bulk_out(endpoint=1, payload=bytes(sector))
+
+    csw = await host.bulk_in(endpoint=1, length=13)
+    sig, tag, residue, status = struct.unpack("<IIIB", csw[:13])
+    assert sig == CSW_SIGNATURE, f"bad CSW signature {sig:#010x}"
+    assert tag == 0x5A5A5A5A, f"CSW tag mismatch: {tag:#010x}"
+    assert residue == 0, f"unexpected residue {residue}"
+    assert status == 0, f"non-UF2 write returned CSW status={status} (should succeed)"
+
+    # No erase/program may happen for a sector that isn't a UF2 block.
+    opcodes = [t.opcode for t in flash.transactions]
+    assert 0x20 not in opcodes, f"unexpected erase on a non-UF2 write: {[hex(o) for o in opcodes]}"
+    assert not [t for t in flash.transactions if t.opcode in (0x02, 0x32)], \
+        "unexpected page program on a non-UF2 write"
+
+
+@cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
 async def test_uf2_write_triggers_program_repeat(dut):
     """Minimal back-to-back-write repro: re-run the same single-block
     UF2 write as the previous test, to isolate whether the multi-block

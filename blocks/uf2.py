@@ -57,12 +57,12 @@ class UF2Decoder(wiring.Component):
                         with m.Case(3):
                             word = Cat(accum[8:], self.i.p.data)
                             with m.If(word != UF2_MAGIC_START0):
-                                m.d.sync += self.error.eq(1)
+                                # this sector isn't a UF2 block. Skip it
+                                # silently so the SCSI WRITE still succeeds
                                 m.next = "DISCARD"
                         with m.Case(7):
                             word = Cat(accum[8:], self.i.p.data)
                             with m.If(word != UF2_MAGIC_START1):
-                                m.d.sync += self.error.eq(1)
                                 m.next = "DISCARD"
                         with m.Case(11):
                             m.d.sync += flags.eq(Cat(accum[8:], self.i.p.data))
@@ -135,8 +135,10 @@ class UF2Decoder(wiring.Component):
                     with m.If(byte_count == 511):
                         m.d.sync += byte_count.eq(0)
                         m.d.sync += accum.eq(0)
-                        # Do NOT clear `error` here. A bad start/inner
-                        # magic set it before we entered DISCARD.
+                        # Don't clear `error` here: a *prior* block's bad end
+                        # magic may have set it and it must persist until the
+                        # transfer-level `clear`. A non-UF2 sector reaching
+                        # DISCARD is itself a clean skip (it set no error).
                         m.next = "HEADER"
 
         # Transfer-level reset from upstream (SCSI).
@@ -252,15 +254,35 @@ class TestUF2Decoder(unittest.TestCase):
             self.assertEqual(d, payload[i], f"byte {i}: data mismatch")
         self.assertEqual(len(received), len(payload))
 
-    def test_bad_magic_start(self):
-        """A block with corrupted magicStart0 should assert error and produce no output."""
+    def test_non_uf2_sector_skipped(self):
+        """A sector without UF2 start magic (e.g. a FAT/directory sector the OS
+        writes when copying onto the drive) is skipped silently: no error, no
+        output. Erroring here fails the SCSI WRITE and may hang the actual UF2 copy."""
         block = bytearray(make_uf2_block(addr=0x2000, data_bytes=bytes(range(8))))
         block[0] = 0xFF
 
         simulate(self.dut, self.feed_blocks(block), self.monitor())
 
-        self.assertTrue(self.error_seen, "error should be asserted on bad magic")
-        self.assertEqual(self.output_count, 0, "no output should be produced for bad block")
+        self.assertFalse(self.error_seen, "a non-UF2 sector must not raise error")
+        self.assertEqual(self.output_count, 0, "no output for a skipped sector")
+
+    def test_metadata_between_blocks(self):
+        """The real drag-drop case: the OS interleaves filesystem-metadata
+        sectors with the UF2 file data. Both UF2 blocks must still decode, the
+        metadata sector is skipped, and no error is raised."""
+        payload = bytes(range(16))
+        b0 = make_uf2_block(addr=0x1000, data_bytes=payload, block_no=0, num_blocks=2)
+        b1 = make_uf2_block(addr=0x1010, data_bytes=payload, block_no=1, num_blocks=2)
+        meta = bytearray(512)
+        meta[0:4] = b"\xDE\xAD\xBE\xEF"   # not UF2 magic
+
+        simulate(self.dut, self.feed_blocks(b0, bytes(meta), b1),
+                 self.monitor(cycles=3000))
+
+        self.assertFalse(self.error_seen, "metadata between blocks must not error")
+        self.assertEqual(self.output_count, 2 * len(payload),
+                         "both blocks' payloads should decode")
+        self.assertTrue(self.done_seen, "done should assert after the final block")
 
     def test_not_main_flash_flag(self):
         """A block with flags bit 0 set should be skipped silently:
