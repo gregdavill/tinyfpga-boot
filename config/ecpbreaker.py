@@ -98,4 +98,6 @@ board = BoardConfig(
     reload_slot=1,
     reload_image_offset=ECP5_SLOT1_OFFSET,
     stay_sources=(ButtonStaySource, WriteEnableStaySource),
+    has_ram_bank=True,
+    ram_family_id=0xECB5_2A00,
 )

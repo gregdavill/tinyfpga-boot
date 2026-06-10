@@ -5,15 +5,22 @@ EP1 bulk endpoints feed `SCSIHandler` -> `UF2Decoder` -> `QspiFlash`. This is
 the behaviour `Top` had before the backend refactor, moved here verbatim.
 """
 
-from amaranth import ResetInserter
-from amaranth.lib import wiring
+from amaranth import ResetInserter, Signal, Mux
+from amaranth.lib import wiring, stream, data
+from amaranth.lib.wiring import flipped
 
 from blocks.luna_wrapper import USBStreamInEndpoint, USBStreamOutEndpoint
 from blocks.scsi import SCSIHandler, MassStorageRequestHandler
 from blocks.uf2 import UF2Decoder
 from blocks.flash import QspiFlash
+from blocks.qspi import Mode
+from blocks.qspi_ram import QspiRam
+from blocks.dual_bank import DualBank
 
 from . import Backend, Reconfig, Status
+
+# tCEM watchdog threshold. 400 cycles is ~6.7 us at 60MHz. Below the APS6404L's 8 us max tCEM.
+_RAM_TCEM_CYCLES = 400
 
 
 class Uf2MscBackend(Backend):
@@ -42,6 +49,13 @@ class Uf2MscBackend(Backend):
                                  block_size=512, **scsi_kwargs)
         self.uf2   = UF2Decoder(base_addr=config.reload_image_offset)
         self.flash = QspiFlash()
+
+        # Optional fast RAM bank (FLASH <-> QSPI PSRAM via cfg_ctrl).
+        self.has_ram_bank = config.has_ram_bank
+        if self.has_ram_bank:
+            self.ram       = QspiRam()
+            self.dual_bank = DualBank(max_cs_cycles=_RAM_TCEM_CYCLES)
+            self.cfg_ctrl_o = self.dual_bank.cfg_ctrl_o
 
     def populate_configuration(self, c, *, bulk_mps):
         c.bMaxPower = 100
@@ -82,7 +96,6 @@ class Uf2MscBackend(Backend):
         wiring.connect(m, ep_in=self.in_ep.i, scsi=scsi.tx)
 
         wiring.connect(m, scsi.write_stream, uf2.i)
-        wiring.connect(m, uf2.o, flash.i)
         m.d.comb += [
             flash.done.eq(uf2.done),
             # Surface UF2 decode errors (e.g. bad end magic) to the host via
@@ -94,19 +107,60 @@ class Uf2MscBackend(Backend):
             uf2.clear.eq(scsi.clear_decoder | usb.reset_detected),
         ]
 
+        if not self.has_ram_bank:
+            wiring.connect(m, uf2.o, flash.i)
+            self.qo, self.qi = flash.qo, flash.qi
+            arm = uf2.done
+            activity = scsi.rx.valid | scsi.tx.valid | flash.qo.valid
+        else:
+            m.submodules.ram = ram = self.ram
+            m.submodules.dual_bank = db = self.dual_bank
+
+            # A UF2 tagged with the RAM familyID streams into the PSRAM.
+            # Any other image is erased/programmed into FLASH. familyID is latched
+            # from each header before block payload is emitted.
+            ram_mode = Signal()
+            m.d.comb += ram_mode.eq(uf2.familyID == self.config.ram_family_id)
+
+            # Route the decoder's byte stream to the selected writer.
+            for w in (flash, ram):
+                m.d.comb += w.i.p.eq(uf2.o.p)
+            m.d.comb += [
+                flash.i.valid.eq(uf2.o.valid & ~ram_mode),
+                ram.i.valid.eq(uf2.o.valid & ram_mode),
+                uf2.o.ready.eq(Mux(ram_mode, ram.i.ready, flash.i.ready)),
+                ram.done.eq(uf2.done),
+            ]
+
+            # Bank-select + tCEM handshake.
+            m.d.comb += [
+                db.bank.eq(ram.bank),
+                db.cs_open.eq(ram.cs_open),
+                ram.tcem_expired.eq(db.tcem_expired),
+            ]
+
+            # Expose a single QSPI bus to Top, connected to the active writer
+            self.qo = stream.Signature(data.StructLayout({
+                "chip": range(2), "mode": Mode, "data": 8})).create()
+            self.qi = stream.Signature(data.StructLayout({"data": 8})).flip().create()
+            with m.If(ram_mode):
+                wiring.connect(m, flipped(self.qo), ram.qo)
+                wiring.connect(m, flipped(self.qi), ram.qi)
+            with m.Else():
+                wiring.connect(m, flipped(self.qo), flash.qo)
+                wiring.connect(m, flipped(self.qi), flash.qi)
+
+            # For a RAM upload, reconfigure waits for the writer's boot-arm
+            arm = Mux(ram_mode, ram.boot_ready, uf2.done)
+            activity = (scsi.rx.valid | scsi.tx.valid
+                        | flash.qo.valid | ram.qo.valid)
+
         # Status: ERROR (bad UF2) > DONE (decode, reload) > ACTIVE (USB traffic) > IDLE (default).
         with m.If(uf2.error):
             m.d.comb += self.status.eq(Status.ERROR)
         with m.Elif(uf2.done):
             m.d.comb += self.status.eq(Status.DONE)
-        with m.Elif(scsi.rx.valid | scsi.tx.valid | flash.qo.valid):
+        with m.Elif(activity):
             m.d.comb += self.status.eq(Status.ACTIVE)
 
-        # QSPI bus: Top muxes these against the serial source inside USB-CONNECT.
-        self.qo = flash.qo
-        self.qi = flash.qi
-
-        return Reconfig(
-            arm=uf2.done,
-            activity=scsi.rx.valid | scsi.tx.valid | flash.qo.valid,
-        )
+        return Reconfig(arm=arm, activity=activity)

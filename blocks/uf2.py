@@ -26,6 +26,7 @@ class UF2Decoder(wiring.Component):
             "error":     Out(1),
             "blockNo":   Out(32),
             "numBlocks": Out(32),
+            "familyID":  Out(32),
             "done":      Out(1),
         })
 
@@ -75,6 +76,9 @@ class UF2Decoder(wiring.Component):
                         with m.Case(27):
                             m.d.sync += self.numBlocks.eq(Cat(accum[8:], self.i.p.data))
                         with m.Case(31):
+                            # familyID, when flags bit 0x2000 is set; pick the RAM bank.
+                            m.d.sync += self.familyID.eq(
+                                Cat(accum[8:], self.i.p.data))
                             # All header fields latched; check flags
                             with m.If(flags & 0x0001):
                                 # "not main flash" flag set → skip the block.

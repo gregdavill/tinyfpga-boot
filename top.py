@@ -180,6 +180,12 @@ class Top(Elaboratable):
         # QSPI-facing streams, and reports the reconfigure arm/activity.
         rc = self.backend.build(m, usb=usb)
 
+        # Dual-bank boards drive `cfg_ctrl` (the FLASH/RAM config-source latch)
+        # from the backend's bank controller.
+        if self.config and self.config.has_ram_bank:
+            cfg_ctrl = platform.request("cfg_ctrl", dir="o")
+            m.d.comb += cfg_ctrl.o.eq(self.backend.cfg_ctrl_o)
+
         # Status indicator
         def _optional(name, dir):
             try:

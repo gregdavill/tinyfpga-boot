@@ -76,10 +76,14 @@ class BoardConfig:
     # Sync-domain cycles of quiet before reconfiguring.
     reload_idle_cycles: int | None = None
 
-    # A non-empty tuple enables auto-boot: at power-on the bootloader reboots 
-    # into the slot-1 app unless one of these sources says stay. 
+    # A non-empty tuple enables auto-boot: at power-on the bootloader reboots
+    # into the slot-1 app unless one of these sources says stay.
     # Empty (default): always enumerate, never auto-boot.
     stay_sources: tuple = ()
+
+    # Dual-bank (FLASH / QSPI PSRAM) support.
+    has_ram_bank: bool = False
+    ram_family_id: int = 0
 
 
 # Per-board modules, collected into a name -> BoardConfig registry.
