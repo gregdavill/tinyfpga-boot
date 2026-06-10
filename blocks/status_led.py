@@ -18,34 +18,40 @@ def _counter(m, clk_freq):
     return cnt
 
 
+_PWM_BITS = 8                       # PWM / brightness resolution
+_PWM_MAX  = (1 << _PWM_BITS) - 1
+
+
 def _level(m, status, cnt):
-    """Per-state 4-bit brightness envelope driven off `cnt`.
+    """Per-state brightness envelope (0.._PWM_MAX) driven off `cnt`.
 
       IDLE   - triangle breathe        ACTIVE - blink (top-1 bit ~few Hz)
       DONE   - full on                 ERROR  - blink fast (top-2 bit)
     """
     w = len(cnt)
-    ramp = cnt[w - 5:w - 1]                 # slow 4-bit ramp
-    breathe = Mux(cnt[w - 1], ~ramp, ramp)  # up then down
-    blink = Mux(cnt[w - 3], 0xF, 0)
-    blink_fast = Mux(cnt[w - 4], 0xF, 0)
+    ramp = cnt[w - 1 - _PWM_BITS:w - 1]     # high-res triangle ramp
+    tri  = Mux(cnt[w - 1], ~ramp, ramp)     # up then down, 0.._PWM_MAX
+    breathe = (tri * tri) >> _PWM_BITS       # gamma ~2 -> smooth perceived ramp
 
-    level = Signal(4)
+    blink      = Mux(cnt[w - 3], _PWM_MAX, 0)
+    blink_fast = Mux(cnt[w - 4], _PWM_MAX, 0)
+
+    level = Signal(_PWM_BITS)
     with m.Switch(status):
         with m.Case(Status.IDLE):
             m.d.comb += level.eq(breathe)
         with m.Case(Status.ACTIVE):
             m.d.comb += level.eq(blink)
         with m.Case(Status.DONE):
-            m.d.comb += level.eq(0xF)
+            m.d.comb += level.eq(_PWM_MAX)
         with m.Case(Status.ERROR):
             m.d.comb += level.eq(blink_fast)
     return level
 
 
 def _pwm(cnt, level):
-    """1-bit PWM: on for `level`/16 of each carrier period."""
-    return cnt[0:4] < level
+    """1-bit PWM: on for `level`/2**_PWM_BITS of each carrier period."""
+    return cnt[0:_PWM_BITS] < level
 
 
 class MonoStatusLed(wiring.Component):
@@ -104,6 +110,69 @@ class RgbStatusLed(wiring.Component):
             self.r.eq(red & on),
             self.g.eq(grn & on),
             self.b.eq(blu & on),
+        ]
+        return m
+
+
+class MultiplexRgbStatusLed(wiring.Component):
+    """Animator for a multiplexed `n` x RGB bar: the RgbStatus colour-per-state,
+    but with the brightness envelope phase-shifted per LED.
+
+    Outputs are *logical* (active-high). The board maps them onto physical
+    pins/polarity: `sel` is the one-hot (active-high) LED select.
+    """
+
+    def __init__(self, *, n, clk_freq=12_000_000):
+        if n < 1:
+            raise ValueError("n must be at least 1")
+        self._n = n
+        self._clk_freq = clk_freq
+        super().__init__({
+            "status": In(Status),
+            "sel":    Out(n),   # one-hot LED select
+            "rgb":    Out(3),   # (R, G, B) channel-on
+        })
+
+    def elaborate(self, platform):
+        m = Module()
+        cnt = _counter(m, self._clk_freq)
+        w = len(cnt)
+
+        # Colour per state (mirrors RgbStatusLed).
+        red = Signal()
+        grn = Signal()
+        blu = Signal()
+        with m.Switch(self.status):
+            with m.Case(Status.IDLE):
+                m.d.comb += grn.eq(1)
+            with m.Case(Status.ACTIVE):
+                m.d.comb += blu.eq(1)
+            with m.Case(Status.DONE):
+                m.d.comb += grn.eq(1)
+            with m.Case(Status.ERROR):
+                m.d.comb += red.eq(1)
+
+        # Scan the LEDs one-hot, dwelling per slot for a ~1 kHz full-bar refresh
+        dwell_max = max(1, self._clk_freq // (self._n * 1000))
+        slot  = Signal(range(self._n))
+        dwell = Signal(range(dwell_max))
+        with m.If(dwell == dwell_max - 1):
+            m.d.sync += dwell.eq(0)
+            with m.If(slot == self._n - 1):
+                m.d.sync += slot.eq(0)
+            with m.Else():
+                m.d.sync += slot.eq(slot + 1)
+        with m.Else():
+            m.d.sync += dwell.eq(dwell + 1)
+
+        # Phase-shift the envelope per LED
+        phased = (cnt + (slot << (w - 4)))[:w]
+        on = _pwm(cnt, _level(m, self.status, phased))
+
+        colour = Cat(red, grn, blu)
+        m.d.comb += [
+            self.sel.eq(C(1) << slot),       # one-hot, logical
+            self.rgb.eq(Mux(on, colour, 0)),
         ]
         return m
 

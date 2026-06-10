@@ -1,6 +1,5 @@
 from amaranth import *
 from amaranth.lib import wiring, io
-from amaranth.build.res import ResourceError
 from blocks.ports import PortGroup
 
 from usb_protocol.emitters   import DeviceDescriptorCollection
@@ -10,7 +9,6 @@ from config import SerialSource
 
 from blocks.qspi import Controller
 from blocks.serial_source import FlashUidSerialSource, SecurityPageSerialSource
-from blocks.status_led import MonoStatusLed, RgbStatusLed
 from blocks.usb.serial_handler import USBStreamSerialDescriptorHandler
 from blocks.usb.vendor_spi import VendorSpiHandler
 
@@ -186,31 +184,8 @@ class Top(Elaboratable):
             cfg_ctrl = platform.request("cfg_ctrl", dir="o")
             m.d.comb += cfg_ctrl.o.eq(self.backend.cfg_ctrl_o)
 
-        # Status indicator
-        def _optional(name, dir):
-            try:
-                return platform.request(name, dir=dir)
-            except ResourceError:
-                return None
-
-        led = _optional("led", "o")
-        rgb = _optional("rgb_led", {"r": "o", "g": "o", "b": "o"})
-        if led is not None:
-            # Single LED
-            m.submodules.status_led = ind = MonoStatusLed()
-            m.d.comb += [
-                ind.status.eq(self.backend.status),
-                led.o.eq(ind.led),
-            ]
-        elif rgb is not None:
-            # Common-anode RGB LED
-            m.submodules.status_led = ind = RgbStatusLed()
-            m.d.comb += [
-                ind.status.eq(self.backend.status),
-                rgb.r.o.eq(ind.r),
-                rgb.g.o.eq(ind.g),
-                rgb.b.o.eq(ind.b),
-            ]
+        # Status indicator — the platform owns its board-specific LED(s).
+        platform.create_status_led(m, self.backend.status)
 
         # System-reconfigure trigger; the platform owns the primitive.
         # A bus reset cancels a pending reload, and `activity` keeps

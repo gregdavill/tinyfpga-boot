@@ -43,6 +43,35 @@ class _ProjectPlatform:
     def is_hs(self):
         return self.usb_phy == "ulpi_hs"
 
+    def create_status_led(self, m, status):
+        """Drive a board status indicator from `status`
+        """
+        from amaranth.build.res import ResourceError
+        from blocks.status_led import MonoStatusLed, RgbStatusLed
+
+        def _optional(name, dir):
+            try:
+                return self.request(name, dir=dir)
+            except ResourceError:
+                return None
+
+        led = _optional("led", "o")
+        rgb = _optional("rgb_led", {"r": "o", "g": "o", "b": "o"})
+        if led is not None:
+            m.submodules.status_led = ind = MonoStatusLed()
+            m.d.comb += [
+                ind.status.eq(status),
+                led.o.eq(ind.led),
+            ]
+        elif rgb is not None:
+            m.submodules.status_led = ind = RgbStatusLed()
+            m.d.comb += [
+                ind.status.eq(status),
+                rgb.r.o.eq(ind.r),
+                rgb.g.o.eq(ind.g),
+                rgb.b.o.eq(ind.b),
+            ]
+
 
 # ---------------------------------------------------------------------------
 # iCE40 platform primitives (clock/reset + warmboot)

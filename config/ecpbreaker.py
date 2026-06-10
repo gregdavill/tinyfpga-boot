@@ -82,6 +82,25 @@ class ECPBreakerR3_0Platform(ECP5Mixin, LatticeECP5Platform):
 
     connectors = []
 
+    def create_status_led(self, m, status):
+        """Status indicator on the 6 x RGB `led_rgb_multiplex` matrix.
+
+        Board mapping six LEDs; 
+         * cathodes are active-high (N-mosfet)
+         * anode 0 is inverted by a P-mosfet (LED0 lights while the
+           FPGA is unconfigured), invert a[0]'s on-level.
+        """
+        from blocks.status_led import MultiplexRgbStatusLed
+
+        led = self.request("led_rgb_multiplex", 0, dir={"a": "o", "c": "o"})
+        # sync runs at 60 MHz on this board (ULPI HS).
+        m.submodules.status_led = ind = MultiplexRgbStatusLed(n=4, clk_freq=60_000_000)
+        m.d.comb += [
+            ind.status.eq(status),
+            led.a.o.eq(ind.sel ^ 0b0001),   # invert a[0] for its P-mosfet
+            led.c.o.eq(ind.rgb),              # cathodes active-high
+        ]
+
 
 board = BoardConfig(
     name="ecpbreaker",
