@@ -156,9 +156,13 @@ class Top(Elaboratable):
         for idx, src in enumerate(self.stay_sources):
             m.submodules[f"stay_{idx}"] = src
 
-        # Add our standard control endpoint to the device.
-        ep = usb.add_standard_control_endpoint(
-            self.descriptors, skiplist=[self.serial_handler.handler_condition])
+        # Add our standard control endpoint to the device. Any handler that
+        # claims STANDARD requests must be skiplisted from the standard
+        # request handler.
+        skiplist = [self.serial_handler.handler_condition]
+        skiplist += [h.handler_condition for h in self.backend.request_handlers()
+                     if hasattr(h, "handler_condition")]
+        ep = usb.add_standard_control_endpoint(self.descriptors, skiplist=skiplist)
         ep.add_request_handler(self.serial_handler)
         ep.add_request_handler(self.vendor_spi)
         for handler in self.backend.request_handlers():

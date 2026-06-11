@@ -27,6 +27,10 @@ DFU_GETSTATUS = 0x03
 RT_CLASS_IF_OUT = 0x21   # host -> device
 RT_CLASS_IF_IN  = 0xA1   # device -> host
 
+# Standard SET_INTERFACE (alt-setting select): standard | interface recipient, OUT
+RT_STD_IF_OUT = 0x01
+SET_INTERFACE = 0x0B
+
 # Single DFU area maps to the slot-1 reload region (see _fs_sim_config).
 DFU_AREA_BASE = 0x40000
 
@@ -100,6 +104,15 @@ async def test_dfu_get_status_idle(dut):
     assert len(status) == 6, f"short GET_STATUS response: {status.hex()}"
     assert status[4] == DFUSTATE_dfuIDLE, \
         f"bState = {status[4]}, expected dfuIDLE ({DFUSTATE_dfuIDLE})"
+
+
+@cocotb.test(timeout_time=TIMEOUT_ENUM, timeout_unit="us")
+async def test_dfu_set_interface_acks(dut):
+    """SET_INTERFACE (alt-setting select) must ACK, not stall."""
+    host, _ = await _bringup(dut)
+    await _enumerate(host)
+
+    await host.control_out(RT_STD_IF_OUT, SET_INTERFACE, w_value=0, w_index=0)
 
 
 @cocotb.test(timeout_time=TIMEOUT_DFU, timeout_unit="us")

@@ -35,6 +35,13 @@ class DFUHandler(USBRequestHandler):
 
         self.if_num = if_num
 
+        # handle SET_INTERFACE (alt-setting selection)
+        self.handler_condition = lambda setup: \
+            (setup.type == USBRequestType.STANDARD) & \
+            (setup.recipient == USBRequestRecipient.INTERFACE) & \
+            (setup.index == self.if_num) & \
+            (setup.request == USBStandardRequests.SET_INTERFACE)
+
         self.addr = Signal(24)
 
         self.areas = Array(areas)
