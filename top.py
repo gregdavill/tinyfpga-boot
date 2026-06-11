@@ -14,7 +14,7 @@ from blocks.usb.vendor_spi import VendorSpiHandler
 
 from backends import BACKENDS
 from staysource import NoValidAppStaySource
-from staysource.no_valid_app import SYNC_WORDS
+from staysource.no_valid_app import SYNC_WORDS, POISON_WORD
 
 
 class Top(Elaboratable):
@@ -41,7 +41,8 @@ class Top(Elaboratable):
         if self.auto_boot:
             self.stay_sources.append(NoValidAppStaySource(
                 app_offset=config.reload_image_offset or 0,
-                sync_word=SYNC_WORDS[config.platform.fpga_family]))
+                sync_word=SYNC_WORDS[config.platform.fpga_family],
+                poison_word=POISON_WORD if config.has_ram_bank else None))
             self.stay_sources += [make() for make in factories]
 
         # --- USB descriptors + serial-number control handler ---

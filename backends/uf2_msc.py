@@ -16,6 +16,8 @@ from blocks.flash import QspiFlash
 from blocks.qspi import Mode
 from blocks.qspi_ram import QspiRam
 from blocks.dual_bank import DualBank
+from blocks.boot_header import BootHeader
+from tools.ecp_bitstream import flash_header
 
 from . import Backend, Reconfig, Status
 
@@ -56,6 +58,9 @@ class Uf2MscBackend(Backend):
             self.ram       = QspiRam()
             self.dual_bank = DualBank(max_cs_cycles=_RAM_TCEM_CYCLES)
             self.cfg_ctrl_o = self.dual_bank.cfg_ctrl_o
+            self.boot_header = BootHeader(
+                header_bytes=flash_header(),
+                base_addr=config.reload_image_offset)
 
     def populate_configuration(self, c, *, bulk_mps):
         c.bMaxPower = 100
@@ -115,6 +120,7 @@ class Uf2MscBackend(Backend):
         else:
             m.submodules.ram = ram = self.ram
             m.submodules.dual_bank = db = self.dual_bank
+            m.submodules.boot_header = bh = self.boot_header
 
             # A UF2 tagged with the RAM familyID streams into the PSRAM.
             # Any other image is erased/programmed into FLASH. familyID is latched
@@ -122,15 +128,40 @@ class Uf2MscBackend(Backend):
             ram_mode = Signal()
             m.d.comb += ram_mode.eq(uf2.familyID == self.config.ram_family_id)
 
+            header_done = Signal()
+            ensuring    = Signal()
+            m.d.comb += ensuring.eq(ram_mode & ~header_done)
+
+            with m.FSM(name="header"):
+                with m.State("WAIT"):
+                    with m.If(ensuring & ram.idle):
+                        m.d.comb += bh.i_start.eq(1)
+                        m.next = "RUN"
+                with m.State("RUN"):
+                    with m.If(bh.done):
+                        m.d.sync += header_done.eq(1)
+                        m.next = "WAIT"
+            # Reset the latch only on a real new USB session — NOT on uf2.clear,
+            # which pulses every SCSI command and would re-trigger mid-transfer.
+            with m.If(usb.reset_detected):
+                m.d.sync += header_done.eq(0)
+
             # Route the decoder's byte stream to the selected writer.
             for w in (flash, ram):
-                m.d.comb += w.i.p.eq(uf2.o.p)
+                m.d.comb += w.i.p.data.eq(uf2.o.p.data)
             m.d.comb += [
+                flash.i.p.addr.eq(uf2.o.p.addr),
+                ram.i.p.addr.eq(uf2.o.p.addr - self.uf2.base_addr),
                 flash.i.valid.eq(uf2.o.valid & ~ram_mode),
-                ram.i.valid.eq(uf2.o.valid & ram_mode),
-                uf2.o.ready.eq(Mux(ram_mode, ram.i.ready, flash.i.ready)),
+                ram.i.valid.eq(uf2.o.valid & ram_mode & ~ensuring),
                 ram.done.eq(uf2.done),
             ]
+            with m.If(ensuring):
+                m.d.comb += uf2.o.ready.eq(0)
+            with m.Elif(ram_mode):
+                m.d.comb += uf2.o.ready.eq(ram.i.ready)
+            with m.Else():
+                m.d.comb += uf2.o.ready.eq(flash.i.ready)
 
             # Bank-select + tCEM handshake.
             m.d.comb += [
@@ -139,11 +170,15 @@ class Uf2MscBackend(Backend):
                 ram.tcem_expired.eq(db.tcem_expired),
             ]
 
-            # Expose a single QSPI bus to Top, connected to the active writer
+            # Expose a single QSPI bus to Top, connected to the active writer:
+            # BootHeader during the ensure, else the selected FLASH/RAM writer.
             self.qo = stream.Signature(data.StructLayout({
                 "chip": range(2), "mode": Mode, "data": 8})).create()
             self.qi = stream.Signature(data.StructLayout({"data": 8})).flip().create()
-            with m.If(ram_mode):
+            with m.If(ensuring):
+                wiring.connect(m, flipped(self.qo), bh.qo)
+                wiring.connect(m, flipped(self.qi), bh.qi)
+            with m.Elif(ram_mode):
                 wiring.connect(m, flipped(self.qo), ram.qo)
                 wiring.connect(m, flipped(self.qi), ram.qi)
             with m.Else():
@@ -153,7 +188,7 @@ class Uf2MscBackend(Backend):
             # For a RAM upload, reconfigure waits for the writer's boot-arm
             arm = Mux(ram_mode, ram.boot_ready, uf2.done)
             activity = (scsi.rx.valid | scsi.tx.valid
-                        | flash.qo.valid | ram.qo.valid)
+                        | flash.qo.valid | ram.qo.valid | bh.qo.valid)
 
         # Status: ERROR (bad UF2) > DONE (decode, reload) > ACTIVE (USB traffic) > IDLE (default).
         with m.If(uf2.error):

@@ -45,6 +45,7 @@ class QspiRam(wiring.Component):
             "cs_open":      Out(1),   # high while CS asserted -> tCEM counter
             "tcem_expired": In(1),    # break the burst before tCEM
             "boot_ready":   Out(1),   # boot-arm done -> gate reconfigure
+            "idle":         Out(1),   # high in IDLE (bus untouched, bank=FLASH)
         })
 
     def elaborate(self, platform) -> Module:
@@ -82,6 +83,7 @@ class QspiRam(wiring.Component):
 
         with m.FSM():
             with m.State("IDLE"):
+                m.d.comb += self.idle.eq(1)
                 m.d.comb += self.i.ready.eq(1)
                 with m.If(self.i.valid):
                     m.d.sync += [

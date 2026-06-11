@@ -22,13 +22,19 @@ SYNC_WORDS = {
     "ecp5":  0xFFFFBDB3,
 }
 
+# A "poison" word the FLASH jump-header places *before* its preamble so this
+# source treats the slot as no-valid-app (stay) even though a real preamble
+# follows. The ECP5 config scans past it to the preamble.
+POISON_WORD = 0x5AFEB007
+
 
 class NoValidAppStaySource(StaySource):
     needs_flash = True
 
-    def __init__(self, *, app_offset, sync_word, probe_len=256):
+    def __init__(self, *, app_offset, sync_word, poison_word=None, probe_len=256):
         self._app_offset = app_offset
         self._sync_word = sync_word
+        self._poison_word = poison_word
         self._probe_len = probe_len
         super().__init__()
 
@@ -36,13 +42,14 @@ class NoValidAppStaySource(StaySource):
         m = Module()
 
         sync_found = Signal()            # set once the sync word is seen
+        poison_found = Signal()          # set if the poison word is seen
         window = Signal(32)              # sliding 4-byte window of read data
         cnt = Signal(range(self._probe_len + 1))
         ai = Signal(range(3))
         addr = self._app_offset
 
         # `stay` is the no-app verdict; only sampled by Top after `done`.
-        m.d.comb += self.stay.eq(~sync_found)
+        m.d.comb += self.stay.eq(~sync_found | poison_found)
 
         def send(chip, mode, d=0):
             m.d.comb += [
@@ -99,6 +106,9 @@ class NoValidAppStaySource(StaySource):
                     m.d.sync += window.eq(nxt)
                     with m.If(nxt == self._sync_word):
                         m.d.sync += sync_found.eq(1)
+                    if self._poison_word is not None:
+                        with m.If(nxt == self._poison_word):
+                            m.d.sync += poison_found.eq(1)
                     with m.If(cnt == 1):
                         m.next = "RELEASE"
                     with m.Else():
@@ -128,8 +138,9 @@ class TestNoValidAppStaySource(unittest.TestCase):
 
     SYNC = 0x7EAA997E
 
-    def _verdict(self, read_bytes):
+    def _verdict(self, read_bytes, poison_word=None):
         dut = NoValidAppStaySource(app_offset=0x40000, sync_word=self.SYNC,
+                                   poison_word=poison_word,
                                    probe_len=len(read_bytes))
         out = {}
 
@@ -164,6 +175,17 @@ class TestNoValidAppStaySource(unittest.TestCase):
     def test_garbage_without_sync_stays(self):
         # Non-erased but no sync word -> not a (this-family) bitstream -> stay.
         self.assertEqual(self._verdict([0xDE, 0xAD, 0xBE, 0xEF] * 3), 1)
+
+    def test_poison_overrides_sync(self):
+        # Header-like layout: leading bytes, poison word, then a valid sync. With
+        # poison checking enabled the slot is treated as no-valid-app -> stay.
+        seq = [0xFF, 0x00, 0x5A, 0xFE, 0xB0, 0x07, 0xFF, 0x00, 0x7E, 0xAA, 0x99, 0x7E]
+        self.assertEqual(self._verdict(seq, poison_word=0x5AFEB007), 1)
+
+    def test_poison_ignored_when_disabled(self):
+        # Same bytes, but poison checking off -> the sync word -> auto-boot.
+        seq = [0xFF, 0x00, 0x5A, 0xFE, 0xB0, 0x07, 0xFF, 0x00, 0x7E, 0xAA, 0x99, 0x7E]
+        self.assertEqual(self._verdict(seq), 0)
 
 
 if __name__ == "__main__":

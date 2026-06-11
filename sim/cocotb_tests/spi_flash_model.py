@@ -12,6 +12,7 @@ Implements only the opcodes the bootloader issues:
 * 0x6B  Fast Read Quad Output     (1-1-4) - used by some boot ROMs
 * 0x0B  Fast Read                  (1-1-1)
 * 0xAB  Release Power-down / Read Device ID
+* 0xFF  Mode-bit reset            (sent by `SecurityPage` before 0x48)
 
 The model captures every command into `self.transactions` so tests can
 assert on the exact sequence of opcodes + payloads the DUT issued.
@@ -192,6 +193,10 @@ class SPIFlashModel:
                 await self._cmd_fast_read(tx, cs_idle, lanes=4)
             elif tx.opcode == 0xAB:
                 await self._cmd_release_pd(tx, cs_idle)
+            elif tx.opcode == 0xFF:
+                # Continuous-read / mode-bit reset: no state to change in the
+                # model, just consume the frame until CS# rises.
+                await cs_idle
             else:
                 tx.read_data = b"<unhandled>"
                 await cs_idle
