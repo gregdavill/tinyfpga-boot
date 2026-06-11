@@ -22,16 +22,18 @@ class Uf2MscBackend(Backend):
     device_class = (0, 0, 0)
     personality = "UF2"
 
-    def __init__(self, config, *, hs):
-        super().__init__(config, hs=hs)
+    def __init__(self, config, *, hs, alloc=None):
+        super().__init__(config, hs=hs, alloc=alloc)
 
         self.usb_ids = (config.vid, config.pid)
+        self._if_num = self.alloc.interface()
+        self._ep_num = self.alloc.endpoint()
 
         mps = 512 if hs else 64
-        self.out_ep = USBStreamOutEndpoint(endpoint_number=1, max_packet_size=mps)
-        self.in_ep  = USBStreamInEndpoint(endpoint_number=1, max_packet_size=mps)
+        self.out_ep = USBStreamOutEndpoint(endpoint_number=self._ep_num, max_packet_size=mps)
+        self.in_ep  = USBStreamInEndpoint(endpoint_number=self._ep_num, max_packet_size=mps)
 
-        self.ms_handler = MassStorageRequestHandler(if_num=0)
+        self.ms_handler = MassStorageRequestHandler(if_num=self._if_num)
 
         scsi_kwargs = dict(
             scsi_vendor=config.scsi_vendor,
@@ -56,20 +58,20 @@ class Uf2MscBackend(Backend):
         c.bMaxPower = 100
 
         with c.InterfaceDescriptor() as i:
-            i.bInterfaceNumber   = 0
+            i.bInterfaceNumber   = self._if_num
             i.bInterfaceClass    = 0x08  # Mass Storage
             i.bInterfaceSubclass = 0x06  # SCSI Transparent Command Set
             i.bInterfaceProtocol = 0x50  # Bulk-Only Transport
             i.iInterface = "UF2"
 
             with i.EndpointDescriptor() as ep:
-                ep.bEndpointAddress = 0x01  # EP1 OUT
+                ep.bEndpointAddress = self._ep_num         # bulk OUT
                 ep.bmAttributes     = 0x02  # Bulk
                 ep.wMaxPacketSize   = bulk_mps
                 ep.bInterval        = 0
 
             with i.EndpointDescriptor() as ep:
-                ep.bEndpointAddress = 0x81  # EP1 IN
+                ep.bEndpointAddress = 0x80 | self._ep_num  # bulk IN
                 ep.bmAttributes     = 0x02  # Bulk
                 ep.wMaxPacketSize   = bulk_mps
                 ep.bInterval        = 0

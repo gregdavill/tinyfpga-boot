@@ -74,14 +74,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build TinyFPGA bootloader bitstream")
     parser.add_argument("--board", default="tinyfpga_bx", choices=BOARDS.keys(),
                         help="Target board (default: tinyfpga_bx)")
-    parser.add_argument("--backend", choices=[b.value for b in Backend], default=None,
-                        help="USB personality to build: 'uf2' (Mass-Storage / "
-                             "drag-and-drop) or 'serial' (TinyFPGA tinyprog "
-                             "CDC-ACM bridge). Defaults to the board's config.")
+    parser.add_argument("--backend", default=None,
+                        help="USB personality to build: a single value ('uf2' "
+                             "Mass-Storage / drag-and-drop, 'serial' TinyFPGA "
+                             "CDC-ACM bridge, 'dfu' USB DFU), a comma-separated "
+                             "list to expose several at once as a composite "
+                             "device (e.g. 'uf2,dfu,serial'), or 'all'. Defaults "
+                             "to the board's config.")
     args = parser.parse_args()
 
     config = BOARDS[args.board]
     if args.backend:
-        config.backend = Backend(args.backend)
+        if args.backend == "all":
+            config.backend = list(Backend)
+        elif "," in args.backend:
+            config.backend = [Backend(v) for v in args.backend.split(",")]
+        else:
+            config.backend = Backend(args.backend)
 
     build(config)

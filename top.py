@@ -13,6 +13,7 @@ from blocks.usb.serial_handler import USBStreamSerialDescriptorHandler
 from blocks.usb.vendor_spi import VendorSpiHandler
 
 from backends import BACKENDS
+from backends.composite import CompositeBackend
 from staysource import NoValidAppStaySource
 from staysource.no_valid_app import SYNC_WORDS, POISON_WORD
 
@@ -32,7 +33,13 @@ class Top(Elaboratable):
             self.serial_source = FlashUidSerialSource()
 
         # --- USB personality (the active backend), selected by config ---
-        self.backend = BACKENDS[config.backend](config, hs=hs)
+        # `config.backend` is either a single kind or a list/tuple of kinds
+        kinds = config.backend
+        kinds = list(kinds) if isinstance(kinds, (list, tuple)) else [kinds]
+        if len(kinds) > 1:
+            self.backend = CompositeBackend(config, hs=hs, kinds=kinds)
+        else:
+            self.backend = BACKENDS[kinds[0]](config, hs=hs)
 
         # --- Auto-boot: pluggable "stay in the bootloader" sources. ---
         factories = list(config.stay_sources) if config else []

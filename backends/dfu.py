@@ -46,13 +46,13 @@ class DfuBackend(Backend):
     device_class = (0, 0, 0)
     personality = "DFU"
 
-    _IF_NUM  = 0
     _RAM_ALT = 1   # bAlternateSetting that targets the QSPI PSRAM
 
-    def __init__(self, config, *, hs):
-        super().__init__(config, hs=hs)
+    def __init__(self, config, *, hs, alloc=None):
+        super().__init__(config, hs=hs, alloc=alloc)
 
         self.usb_ids = (config.vid, config.pid)
+        self._IF_NUM = self.alloc.interface()
 
         self.has_ram_bank = config.has_ram_bank
         if self.has_ram_bank:

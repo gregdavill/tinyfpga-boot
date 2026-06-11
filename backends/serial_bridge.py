@@ -26,15 +26,18 @@ class SerialBridgeBackend(Backend):
     device_class = (0xEF, 0x02, 0x01)
     personality = "SerialBoot"
 
-    _NOTIFY_EP = 2   # interrupt IN (declared, never driven)
-    _DATA_EP   = 1   # bulk IN/OUT
+    def __init__(self, config, *, hs, alloc=None):
+        super().__init__(config, hs=hs, alloc=alloc)
 
-    def __init__(self, config, *, hs):
-        super().__init__(config, hs=hs)
-
-        # tinyprog scans for 1d50:6130 by default; pin it regardless of the
-        # board's UF2 IDs so the stock programmer works with no flags.
         self.usb_ids = (0x1d50, 0x6130)
+
+        # Communications interface + Data interface (consecutive, as the IAD
+        # and Union descriptors below assume).
+        self._comms_if = self.alloc.interface()
+        self._data_if  = self.alloc.interface()
+        # Bulk data pair share one endpoint number; the notification IN is its own.
+        self._DATA_EP   = self.alloc.endpoint()
+        self._NOTIFY_EP = self.alloc.endpoint()
 
         bulk_mps = 512 if hs else 64
         self._notify_mps = 8
@@ -53,7 +56,7 @@ class SerialBridgeBackend(Backend):
 
         # Both interfaces belong to one CDC function (helps Windows).
         with c.InterfaceAssociationDescriptor() as ia:
-            ia.bFirstInterface   = 0
+            ia.bFirstInterface   = self._comms_if
             ia.bInterfaceCount   = 2
             ia.bFunctionClass    = 0x02  # CDC
             ia.bFunctionSubClass = 0x02  # ACM
@@ -62,7 +65,7 @@ class SerialBridgeBackend(Backend):
         # Communications-class interface: functional descriptors + an unused
         # interrupt-IN notification endpoint.
         with c.InterfaceDescriptor() as i:
-            i.bInterfaceNumber   = 0
+            i.bInterfaceNumber   = self._comms_if
             i.bInterfaceClass    = 0x02  # CDC
             i.bInterfaceSubclass = 0x02  # ACM
             i.bInterfaceProtocol = 0x01  # AT commands
@@ -71,14 +74,14 @@ class SerialBridgeBackend(Backend):
             i.add_subordinate_descriptor(cdc.HeaderDescriptorEmitter())
 
             cm = cdc.CallManagementFunctionalDescriptorEmitter()
-            cm.bDataInterface = 1
+            cm.bDataInterface = self._data_if
             i.add_subordinate_descriptor(cm)
 
             i.add_subordinate_descriptor(cdc.ACMFunctionalDescriptorEmitter())
 
             union = cdc.UnionFunctionalDescriptorEmitter()
-            union.bControlInterface      = 0
-            union.bSubordinateInterface0 = 1
+            union.bControlInterface      = self._comms_if
+            union.bSubordinateInterface0 = self._data_if
             i.add_subordinate_descriptor(union)
 
             with i.EndpointDescriptor() as e:
@@ -89,7 +92,7 @@ class SerialBridgeBackend(Backend):
 
         # Data-class interface: the bulk pair tinyprog uses.
         with c.InterfaceDescriptor() as i:
-            i.bInterfaceNumber   = 1
+            i.bInterfaceNumber   = self._data_if
             i.bInterfaceClass    = 0x0a  # CDC data
             i.bInterfaceSubclass = 0x00
             i.bInterfaceProtocol = 0x00

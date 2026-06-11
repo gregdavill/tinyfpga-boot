@@ -32,6 +32,28 @@ class Status(enum.Enum, shape=2):
     ERROR  = 3  #: protocol/decode fault
 
 
+class UsbAlloc:
+    """Hands out unique USB interface and endpoint numbers.
+
+    A single backend gets a fresh allocator (interface 0, endpoint 1).
+    A composite device shares one allocator across its children so their 
+    interfaces/endpoints never collide.
+    """
+    def __init__(self):
+        self._if = 0
+        self._ep = 1
+
+    def interface(self):
+        n = self._if
+        self._if += 1
+        return n
+
+    def endpoint(self):
+        n = self._ep
+        self._ep += 1
+        return n
+
+
 class Backend:
     #: (idVendor, idProduct) presented in the device descriptor.
     usb_ids = (0x1209, 0x5af0)
@@ -42,9 +64,10 @@ class Backend:
     #: Dual-bank `cfg_ctrl` default (0 = FLASH)
     cfg_ctrl_o = 0
 
-    def __init__(self, config, *, hs):
+    def __init__(self, config, *, hs, alloc=None):
         self.config = config
         self.hs = hs
+        self.alloc = alloc if alloc is not None else UsbAlloc()
         #: QSPI-facing streams, populated by `build()`.
         self.qo = None
         self.qi = None
