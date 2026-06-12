@@ -76,6 +76,9 @@ class BoardConfig:
     # Sync-domain cycles of quiet before reconfiguring.
     reload_idle_cycles: int | None = None
 
+    # Extra ecppack flags
+    ecppack_opts: str = "--compress --spimode qspi --freq 38.8"
+
     # A non-empty tuple enables auto-boot: at power-on the bootloader reboots
     # into the slot-1 app unless one of these sources says stay.
     # Empty (default): always enumerate, never auto-boot.
