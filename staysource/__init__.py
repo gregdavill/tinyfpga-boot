@@ -43,6 +43,7 @@ class StaySource(wiring.Component):
         super().__init__(members)
 
 
+from .always import AlwaysStaySource             # noqa: E402,F401
 from .button import ButtonStaySource            # noqa: E402,F401
 from .no_valid_app import NoValidAppStaySource   # noqa: E402,F401
 from .write_enable import WriteEnableStaySource  # noqa: E402,F401

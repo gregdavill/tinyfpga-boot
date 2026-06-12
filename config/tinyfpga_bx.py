@@ -6,7 +6,7 @@ from platforms import ICE40Mixin
 
 from amaranth_boards.tinyfpga_bx import TinyFPGABXPlatform as _TinyFPGABXBase
 from config import BoardConfig, SerialSource, SLOT1_OFFSET
-from staysource import WriteEnableStaySource
+from staysource import AlwaysStaySource
 
 
 class TinyFPGABXPlatform(ICE40Mixin, _TinyFPGABXBase):
@@ -51,5 +51,5 @@ board = BoardConfig(
     serial_source=SerialSource.SECURITY_PAGE,
     reload_slot=1,
     reload_image_offset=SLOT1_OFFSET,
-    stay_sources=(WriteEnableStaySource,),
+    stay_sources=(AlwaysStaySource,),
 )
