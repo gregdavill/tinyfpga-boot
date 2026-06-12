@@ -4,7 +4,7 @@ from amaranth import *
 from amaranth_boards.fomu_pvt import FomuPVTPlatform as _FomuBase
 
 from platforms import ICE40Mixin
-from config import BoardConfig, SerialSource, SLOT1_OFFSET
+from config import BoardConfig, SerialSource, SLOT1_OFFSET, Backend
 from staysource import WriteEnableStaySource
 
 
@@ -46,6 +46,7 @@ board = BoardConfig(
     scsi_vendor="FOMU",
     scsi_product="UF2 Bootloader",
     serial_source=SerialSource.FLASH_UID,
+    backend=[Backend.UF2_MSC, Backend.DFU],
     reload_slot=1,
     reload_image_offset=SLOT1_OFFSET,
     stay_sources=(WriteEnableStaySource,),
