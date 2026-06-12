@@ -7,7 +7,7 @@ from luna.usb2               import USBDevice
 
 from config import SerialSource
 
-from blocks.qspi import Controller
+from blocks.qspi import Controller, Mode
 from blocks.flash_wake import FlashWake
 from blocks.serial_source import FlashUidSerialSource, SecurityPageSerialSource
 from blocks.usb.serial_handler import USBStreamSerialDescriptorHandler
@@ -197,9 +197,11 @@ class Top(Elaboratable):
 
         # Dual-bank boards drive `cfg_ctrl` (the FLASH/RAM config-source latch)
         # from the backend's bank controller.
-        if self.config and self.config.has_ram_bank:
+        has_ram_bank = bool(self.config and self.config.has_ram_bank)
+        select_flash = Signal()
+        if has_ram_bank:
             cfg_ctrl = platform.request("cfg_ctrl", dir="o")
-            m.d.comb += cfg_ctrl.o.eq(self.backend.cfg_ctrl_o)
+            m.d.comb += cfg_ctrl.o.eq(Mux(select_flash, 0, self.backend.cfg_ctrl_o))
 
         # Status indicator — the platform owns its board-specific LED(s).
         platform.create_status_led(m, self.backend.status)
@@ -232,7 +234,31 @@ class Top(Elaboratable):
         sel = Signal(range(len(flash_clients) + 1))
 
         with m.FSM():
+            if has_ram_bank:
+                with m.State('SELECT-FLASH'):
+                    m.d.comb += select_flash.eq(1)
+                    m.d.comb += [
+                        qspi.i.p.chip.eq(1),
+                        qspi.i.p.mode.eq(Mode.PutX1),
+                        qspi.i.p.data.eq(0),
+                        qspi.i.valid.eq(1),
+                    ]
+                    with m.If(qspi.i.ready):
+                        m.next = 'SELECT-FLASH-RELEASE'
+
+                with m.State('SELECT-FLASH-RELEASE'):
+                    m.d.comb += select_flash.eq(1)
+                    # chip=0 releases CS#; the rising edge latches cfg_ctrl=FLASH.
+                    m.d.comb += [
+                        qspi.i.p.chip.eq(0),
+                        qspi.i.p.mode.eq(Mode.Dummy),
+                        qspi.i.valid.eq(1),
+                    ]
+                    with m.If(qspi.i.ready):
+                        m.next = 'BOOT-READ'
+
             with m.State('BOOT-READ'):
+                m.d.comb += select_flash.eq(1)
                 # Read the serial source (and any flash stay sources) over QSPI
                 # before USB comes up.
                 with m.Switch(sel):
