@@ -264,7 +264,9 @@ class Top(Elaboratable):
                 pass
 
             with m.State('USB-CONNECT'):
-                m.d.comb += usb.connect.eq(1)
+                # Platforms that sequence IO power (adjustable VccIo) hold this
+                # low until their rails are up; most return constant-1.
+                m.d.comb += usb.connect.eq(platform.usb_connect_ok())
 
                 # Share the QSPI bus: the vendor EP0 bridge grabs it while a
                 # provisioning burst is in flight, otherwise the backend's

@@ -43,6 +43,10 @@ class _ProjectPlatform:
     def is_hs(self):
         return self.usb_phy == "ulpi_hs"
 
+    def usb_connect_ok(self):
+        """High when USB may pull up and enumerate."""
+        return C(1)
+
     def create_status_led(self, m, status):
         """Drive a board status indicator from `status`
         """

@@ -93,5 +93,6 @@ class BoardConfig:
 from .tinyfpga_bx import board as tinyfpga_bx    # noqa: E402
 from .orangecrab import board as orangecrab      # noqa: E402
 from .ecpbreaker import board as ecpbreaker      # noqa: E402
+from .butterstick import board as butterstick    # noqa: E402
 
-BOARDS = {b.name: b for b in (tinyfpga_bx, orangecrab, ecpbreaker)}
+BOARDS = {b.name: b for b in (tinyfpga_bx, orangecrab, ecpbreaker, butterstick)}
