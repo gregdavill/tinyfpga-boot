@@ -41,7 +41,7 @@ class USBStreamSerialDescriptorHandler(USBRequestHandler):
         m.submodules.mem = mem = Memory(
             shape=unsigned(8), depth=self.max_len, init=[])
         wport = mem.write_port(domain="sync")
-        rport = mem.read_port(domain="comb")          # async read for the FSM
+        rport = mem.read_port(domain="usb")
 
         # --- Capture side (sync): drop bytes once the buffer is full ---
         length = Signal(range(self.max_len + 1))
@@ -66,10 +66,11 @@ class USBStreamSerialDescriptorHandler(USBRequestHandler):
         # token, `in_packet` counts bytes within the current packet so 
         # we cut it at exactly max_packet_size (the host then issues 
         # another IN for the rest).
+        next_pos = Signal(range(2 + 2 * self.max_len + 1))
         pos = Signal(range(2 + 2 * self.max_len + 1))
         in_packet = Signal(range(self.max_packet_size + 1))
 
-        char_idx = (pos - 2) >> 1
+        char_idx = (next_pos - 2) >> 1
         m.d.comb += rport.addr.eq(char_idx)
         data = Signal(8)
         with m.If(pos == 0):
@@ -96,10 +97,14 @@ class USBStreamSerialDescriptorHandler(USBRequestHandler):
             tx.last.eq(packet_last & tx.valid),
         ]
 
+        m.d.usb += pos.eq(next_pos)
         with m.FSM(domain='usb'):
+            m.d.comb += next_pos.eq(pos) # Default value
+            
             with m.State('IDLE'):
                 with m.If(setup.received & self.handler_condition(setup)):
-                    m.d.usb += [pos.eq(0), pid.eq(1)]
+                    m.d.usb += pid.eq(1)
+                    m.d.comb += next_pos.eq(0)
                     m.next = 'CLAIM'
 
             # Between packets: hold the claim and wait for the next IN
@@ -114,22 +119,23 @@ class USBStreamSerialDescriptorHandler(USBRequestHandler):
                     m.next = 'IDLE'
 
             with m.State('STREAM'):
+                m.d.comb += self.interface.claim.eq(1)
                 m.d.comb += [
-                    self.interface.claim.eq(1),
                     tx.valid.eq(1),
                     tx.payload.eq(data),
                 ]
                 with m.If(tx.ready):
                     with m.If(transfer_last):
-                        m.next = 'CLAIM'                  # done; await status
+                        m.next = 'CLAIM'              # done; await status
                     with m.Elif(in_packet == self.max_packet_size - 1):
                         # Packet full, more to come: advance, flip the data
                         # PID, and wait for the host's next IN.
-                        m.d.usb += [pos.eq(pos + 1), pid.eq(~pid)]
+                        m.d.comb += next_pos.eq(pos + 1)
+                        m.d.usb  += pid.eq(~pid)
                         m.next = 'CLAIM'
                     with m.Else():
-                        m.d.usb += [pos.eq(pos + 1),
-                                    in_packet.eq(in_packet + 1)]
+                        m.d.comb += next_pos.eq(pos + 1)
+                        m.d.usb  += in_packet.eq(in_packet + 1)
 
         return m
 
