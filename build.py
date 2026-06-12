@@ -60,13 +60,15 @@ def build(config, *, build_dir="build", do_program=False):
         )
 
     multiboot = out / "multiboot.bin"
+    # `-a` (lowercase) leaves image 0 unaligned, so the bootloader sits right
+    # after the multiboot header and cold-boot reads it from ~0x0.
     subprocess.run(
-        ["icemulti", f"-A{MULTIBOOT_ALIGN_BITS}", "-p0",
-         "-o", str(multiboot), str(boot_bin), str(boot_bin)],
+        ["icemulti", f"-a{MULTIBOOT_ALIGN_BITS}", "-p0",
+         "-o", str(multiboot), str(boot_bin)],
         check=True,
     )
-    print(f"wrote {multiboot} "
-          f"(slot 0 = bootloader @ 0x0, slot 1 = user image @ {SLOT1_OFFSET:#x})")
+    print(f"wrote {multiboot} (bootloader @ ~0x0, "
+          f"slot {config.reload_slot} = user image @ {config.reload_image_offset:#x})")
     return multiboot
 
 
