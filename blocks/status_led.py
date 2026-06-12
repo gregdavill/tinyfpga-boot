@@ -21,6 +21,10 @@ def _counter(m, clk_freq):
 _PWM_BITS = 8                       # PWM / brightness resolution
 _PWM_MAX  = (1 << _PWM_BITS) - 1
 
+_GAMMA_BITS = 5
+_GAMMA = [round(_PWM_MAX * (i / ((1 << _GAMMA_BITS) - 1)) ** 2)
+          for i in range(1 << _GAMMA_BITS)]
+
 
 def _level(m, status, cnt):
     """Per-state brightness envelope (0.._PWM_MAX) driven off `cnt`.
@@ -31,7 +35,8 @@ def _level(m, status, cnt):
     w = len(cnt)
     ramp = cnt[w - 1 - _PWM_BITS:w - 1]     # high-res triangle ramp
     tri  = Mux(cnt[w - 1], ~ramp, ramp)     # up then down, 0.._PWM_MAX
-    breathe = (tri * tri) >> _PWM_BITS       # gamma ~2 -> smooth perceived ramp
+    gamma = Array(Const(v, _PWM_BITS) for v in _GAMMA)
+    breathe = gamma[tri[_PWM_BITS - _GAMMA_BITS:]]       # gamma-corrected ramp
 
     blink      = Mux(cnt[w - 3], _PWM_MAX, 0)
     blink_fast = Mux(cnt[w - 4], _PWM_MAX, 0)
