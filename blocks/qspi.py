@@ -42,12 +42,20 @@ class Enframer(wiring.Component):
 
         timer = Signal.like(self.divisor)
         cycle = Signal(range(8))
+        # `started` arms after one bit-period of CS-setup (see SCK block below).
+        started = Signal()
 
         for n in range(2):
             m.d.comb += self.frames.p.port.cs.o[n].eq((1 << self.octets.p.chip)[1:])
         m.d.comb += self.frames.p.port.cs.oe.eq(1)
 
         rev_data = self.octets.p.data[::-1] # MSB first
+        # Park WP#/HOLD# (io2/io3) high whenever they aren't carrying quad data
+        for n in range(2):
+            m.d.comb += self.frames.p.port.io2.o[n].eq(1)
+            m.d.comb += self.frames.p.port.io3.o[n].eq(1)
+        m.d.comb += self.frames.p.port.io2.oe.eq(1)
+        m.d.comb += self.frames.p.port.io3.oe.eq(1)
         with m.Switch(self.octets.p.mode):
             with m.Case(Mode.PutX1, Mode.Swap):
                 for n in range(2):
@@ -71,11 +79,17 @@ class Enframer(wiring.Component):
                                 self.frames.p.port.io2.oe,
                                 self.frames.p.port.io1.oe,
                                 self.frames.p.port.io0.oe).eq(0b1111)
+            with m.Case(Mode.GetX4):
+                # Quad read: release io2/io3 so the flash drives all four lines.
+                m.d.comb += self.frames.p.port.io2.oe.eq(0)
+                m.d.comb += self.frames.p.port.io3.oe.eq(0)
 
         # When no chip is selected, keep clock in the idle state. The only supported `mode`
         # in this case is `QSPIMode.Dummy`, which should be used to deassert CS# at the end of
         # a transfer.
-        with m.If(self.octets.p.chip):
+        # Hold SCK idle-high for one bit-period of CS setup before the first
+        # clock edge (`started`). Not strictly needed, but makes saleae decoding cleaner
+        with m.If((self.octets.p.chip != 0) & started):
             m.d.comb += self.frames.p.port.sck.o[0].eq(timer * 2 >  self.divisor)
             m.d.comb += self.frames.p.port.sck.o[1].eq(timer * 2 >= self.divisor)
         with m.Else():
@@ -90,19 +104,26 @@ class Enframer(wiring.Component):
                     m.d.comb += self.frames.p.meta.half.eq(~self.divisor[0])
 
         m.d.comb += self.frames.valid.eq(self.octets.valid)
+        # Re-arm the CS-setup on a valid CS deassert
+        with m.If(self.octets.valid & (self.octets.p.chip == 0)):
+            m.d.sync += started.eq(0)
         with m.If(self.frames.valid & self.frames.ready):
             with m.If(timer == self.divisor):
-                with m.Switch(self.octets.p.mode):
-                    with m.Case(Mode.PutX1, Mode.GetX1, Mode.Swap):
-                        m.d.comb += self.octets.ready.eq(cycle == 7)
-                    with m.Case(Mode.PutX2, Mode.GetX2):
-                        m.d.comb += self.octets.ready.eq(cycle == 3)
-                    with m.Case(Mode.PutX4, Mode.GetX4):
-                        m.d.comb += self.octets.ready.eq(cycle == 1)
-                    with m.Case(Mode.Dummy):
-                        m.d.comb += self.octets.ready.eq(cycle == 0)
-                m.d.sync += cycle.eq(Mux(self.octets.ready, 0, cycle + 1))
                 m.d.sync += timer.eq(0)
+                with m.If((self.octets.p.chip != 0) & ~started):
+                    # First bit-period after CS. hold octect
+                    m.d.sync += started.eq(1)
+                with m.Else():
+                    with m.Switch(self.octets.p.mode):
+                        with m.Case(Mode.PutX1, Mode.GetX1, Mode.Swap):
+                            m.d.comb += self.octets.ready.eq(cycle == 7)
+                        with m.Case(Mode.PutX2, Mode.GetX2):
+                            m.d.comb += self.octets.ready.eq(cycle == 3)
+                        with m.Case(Mode.PutX4, Mode.GetX4):
+                            m.d.comb += self.octets.ready.eq(cycle == 1)
+                        with m.Case(Mode.Dummy):
+                            m.d.comb += self.octets.ready.eq(cycle == 0)
+                    m.d.sync += cycle.eq(Mux(self.octets.ready, 0, cycle + 1))
             with m.Else():
                 m.d.sync += timer.eq(timer + 1)
 
@@ -194,6 +215,8 @@ class Controller(wiring.Component):
             IOStreamer(self._ports, ratio=2, offset=self._offset, meta_layout=Sample, init={
                 "cs":  {"o": 0, "oe": 1}, # deselected
                 "sck": {"o": 1, "oe": 1}, # Motorola "Mode 3" with clock idling high
+                "io2": {"o": 1, "oe": 1}, # WP#  parked high at POR
+                "io3": {"o": 1, "oe": 1}, # HOLD# parked high at POR
             })
         connect(m, io_streamer=io_streamer.i, enframer=enframer.frames)
 
