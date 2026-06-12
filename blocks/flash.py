@@ -6,7 +6,8 @@ from .qspi import Controller, PortGroup, Mode
 
 
 WRITE_ENABLE = 0x06
-SECTOR_ERASE = 0x20
+SECTOR_ERASE = 0x20  # 4 KiB sector erase (used by boot_header)
+BLOCK_ERASE  = 0xD8  # 64 KiB block erase
 PAGE_PROGRAM = 0x02
 READ_STATUS  = 0x05
 
@@ -44,10 +45,12 @@ class QspiFlash(wiring.Component):
         addr_latch = Signal(24)
         data_latch = Signal(8)
 
-        # Sector/page tracking
-        current_sector = Signal(12)  # addr[23:12]
+        # Block/page tracking. 
+        # erase unit is a 64 KiB block (addr[23:16]).
+        # pages are 256 bytes (addr[23:8]).
+        current_block  = Signal(8)   # addr[23:16]
         current_page   = Signal(16)  # addr[23:8]
-        sector_valid   = Signal()
+        block_valid    = Signal()
 
         # Address byte counter (counts 0, 1, 2)
         addr_count = Signal(range(3))
@@ -78,12 +81,12 @@ class QspiFlash(wiring.Component):
                         addr_latch.eq(self.i.p.addr),
                         data_latch.eq(self.i.p.data),
                     ]
-                    with m.If(~sector_valid | (self.i.p.addr[12:24] != current_sector)):
-                        # New sector — erase first
+                    with m.If(~block_valid | (self.i.p.addr[16:24] != current_block)):
+                        # New block — erase first
                         m.d.sync += wren_target.eq(0)  # ERASE
                         m.next = "WREN"
                     with m.Else():
-                        # Same sector — write directly
+                        # Same block — write directly
                         m.d.sync += wren_target.eq(1)  # WRITE
                         m.next = "WREN"
 
@@ -103,20 +106,18 @@ class QspiFlash(wiring.Component):
 
 
             with m.State("ERASE_CMD"):
-                send(1, Mode.PutX1, SECTOR_ERASE)
+                send(1, Mode.PutX1, BLOCK_ERASE)
                 with m.If(self.qo.ready):
                     m.d.sync += addr_count.eq(0)
                     m.next = "ERASE_ADDR"
 
             with m.State("ERASE_ADDR"):
-                # Send 3 address bytes (sector-aligned, so low 12 bits = 0)
-                # Byte 0 = addr[23:16], byte 1 = addr[15:8], byte 2 = 0x00
+                # Send 3 address bytes (block-aligned, so low 16 bits = 0):
+                # byte 0 = addr[23:16], bytes 1 and 2 = 0x00.
                 addr_byte = Signal(8)
                 with m.Switch(addr_count):
                     with m.Case(0):
                         m.d.comb += addr_byte.eq(addr_latch[16:24])
-                    with m.Case(1):
-                        m.d.comb += addr_byte.eq(Cat(C(0, 4), addr_latch[12:16]))
                     with m.Default():
                         m.d.comb += addr_byte.eq(0)
                 send(1, Mode.PutX1, addr_byte)
@@ -130,8 +131,8 @@ class QspiFlash(wiring.Component):
                 send(0, Mode.Dummy)
                 with m.If(self.qo.ready):
                     m.d.sync += [
-                        current_sector.eq(addr_latch[12:24]),
-                        sector_valid.eq(1),
+                        current_block.eq(addr_latch[16:24]),
+                        block_valid.eq(1),
                         poll_return.eq(PollReturn.WREN_WRITE),
                     ]
                     m.next = "POLL_CMD"
@@ -189,11 +190,11 @@ class QspiFlash(wiring.Component):
                     with m.If(~has_next):
                         # Done signal caused release
                         m.d.sync += poll_return.eq(PollReturn.IDLE)
-                    with m.Elif(addr_latch[12:24] != current_sector):
-                        # New sector
+                    with m.Elif(addr_latch[16:24] != current_block):
+                        # New block
                         m.d.sync += poll_return.eq(PollReturn.WREN_ERASE)
                     with m.Else():
-                        # New page, same sector
+                        # New page, same block
                         m.d.sync += poll_return.eq(PollReturn.WREN_WRITE)
                     m.next = "POLL_CMD"
 
@@ -230,7 +231,7 @@ class QspiFlash(wiring.Component):
                                 m.d.sync += wren_target.eq(1)
                                 m.next = "WREN"
                             with m.Case(PollReturn.IDLE):
-                                m.d.sync += sector_valid.eq(0)
+                                m.d.sync += block_valid.eq(0)
                                 m.next = "IDLE"
 
         return m
@@ -306,7 +307,7 @@ class TestQspiFlash(unittest.TestCase):
         simulate(dut, testbench)
 
     def test_page_boundary(self):
-        """Bytes spanning two pages in same sector: two PP commands, one erase"""
+        """Bytes spanning two pages in same 64 KiB block: two PP commands, one erase"""
         dut, pads = self.dut, self.pads
 
         async def testbench(ctx):
@@ -323,18 +324,18 @@ class TestQspiFlash(unittest.TestCase):
 
         simulate(dut, testbench)
 
-    def test_sector_boundary(self):
-        """Bytes spanning two sectors: two erase + two PP sequences"""
+    def test_block_boundary(self):
+        """Bytes spanning two 64 KiB blocks: two erase + two PP sequences"""
         dut, pads = self.dut, self.pads
 
         async def testbench(ctx):
             ctx.set(pads.dq.i, 0b0000)
             await ctx.tick().repeat(3)
 
-            # Byte in sector 0
+            # Byte in block 0
             await stream_put(ctx, dut.i, {'addr': 0x000000, 'data': 0x11})
-            # Byte in sector 1
-            await stream_put(ctx, dut.i, {'addr': 0x001000, 'data': 0x22})
+            # Byte in block 1
+            await stream_put(ctx, dut.i, {'addr': 0x010000, 'data': 0x22})
 
             ctx.set(dut.done, 1)
             await ctx.tick().repeat(5000)

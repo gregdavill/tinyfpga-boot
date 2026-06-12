@@ -269,7 +269,7 @@ async def test_uf2_write_triggers_program(dut):
     await Timer(1500, unit="us")
 
     opcodes = [t.opcode for t in flash.transactions]
-    assert 0x20 in opcodes, f"no sector erase observed (opcodes={[hex(o) for o in opcodes]})"
+    assert 0xD8 in opcodes, f"no block erase observed (opcodes={[hex(o) for o in opcodes]})"
     program_ops = [t for t in flash.transactions if t.opcode in (0x02, 0x32)]
     assert program_ops, f"no page program observed (opcodes={[hex(o) for o in opcodes]})"
     programmed = program_ops[0]
@@ -310,7 +310,7 @@ async def test_non_uf2_write_succeeds(dut):
 
     # No erase/program may happen for a sector that isn't a UF2 block.
     opcodes = [t.opcode for t in flash.transactions]
-    assert 0x20 not in opcodes, f"unexpected erase on a non-UF2 write: {[hex(o) for o in opcodes]}"
+    assert 0xD8 not in opcodes, f"unexpected erase on a non-UF2 write: {[hex(o) for o in opcodes]}"
     assert not [t for t in flash.transactions if t.opcode in (0x02, 0x32)], \
         "unexpected page program on a non-UF2 write"
 
@@ -394,14 +394,14 @@ async def test_uf2_multi_block_write(dut):
 
 
 @cocotb.test(timeout_time=TIMEOUT_UF2, timeout_unit="us")
-async def test_uf2_write_spans_sector_boundary(dut):
-    """Write a single UF2 block whose payload straddles a 4 KiB flash
-    sector boundary. Logical target 0x0000_FF80, 256 bytes → after
-    relocation by RELOAD_IMAGE_OFFSET (sector-aligned) it still
-    straddles one 4 KiB sector boundary, 128 bytes either side.
-    Verify the QspiFlash issues two separate WREN → sector-erase →
-    page-program sequences (one per sector touched), and that all 256
-    payload bytes land contiguously in the flash model.
+async def test_uf2_write_spans_block_boundary(dut):
+    """Write a single UF2 block whose payload straddles a 64 KiB flash
+    block boundary. Logical target 0x0000_FF80, 256 bytes → after
+    relocation by RELOAD_IMAGE_OFFSET (64 KiB-aligned) it straddles the
+    0x5_0000 block boundary, 128 bytes either side.
+    Verify the QspiFlash issues two separate WREN → block-erase →
+    page-program sequences (one per 64 KiB block touched), and that all
+    256 payload bytes land contiguously in the flash model.
     """
     host, flash = await _bringup(dut)
     await host.set_address(0x12)
@@ -430,30 +430,30 @@ async def test_uf2_write_spans_sector_boundary(dut):
     # 256 bytes at ~2.67 µs/byte + two erases + WRENs + status polls.
     await Timer(2000, unit="us")
 
-    # Two sector erases, at the two (relocated) sector-aligned
+    # Two block erases, at the two (relocated) 64 KiB-aligned
     # addresses straddled by the payload.
-    sect_lo = _phys(target_addr) & ~0xFFF
-    sect_hi = sect_lo + 0x1000
+    blk_lo = _phys(target_addr) & ~0xFFFF
+    blk_hi = blk_lo + 0x10000
     erase_addrs = sorted(
         t.address for t in flash.transactions
-        if t.opcode == 0x20 and t.address is not None
+        if t.opcode == 0xD8 and t.address is not None
     )
-    assert erase_addrs == [sect_lo, sect_hi], \
-        f"unexpected sector erases: {[hex(a) for a in erase_addrs]} (want {hex(sect_lo)}, {hex(sect_hi)})"
+    assert erase_addrs == [blk_lo, blk_hi], \
+        f"unexpected block erases: {[hex(a) for a in erase_addrs]} (want {hex(blk_lo)}, {hex(blk_hi)})"
 
-    # At least one page program per sector touched (could be more if
-    # the flash controller splits at page boundaries within a sector).
+    # At least one page program on each side of the block boundary
+    # (more if the controller splits at the 256-byte page boundary).
     program_addrs = [
         t.address for t in flash.transactions
         if t.opcode in (0x02, 0x32) and t.address is not None
     ]
-    assert any(sect_lo <= a < sect_hi for a in program_addrs), \
-        f"no page program in sector {hex(sect_lo)}: {[hex(a) for a in program_addrs]}"
-    assert any(sect_hi <= a < sect_hi + 0x1000 for a in program_addrs), \
-        f"no page program in sector {hex(sect_hi)}: {[hex(a) for a in program_addrs]}"
+    assert any(blk_lo <= a < blk_hi for a in program_addrs), \
+        f"no page program below block boundary {hex(blk_hi)}: {[hex(a) for a in program_addrs]}"
+    assert any(blk_hi <= a < blk_hi + 0x1000 for a in program_addrs), \
+        f"no page program in block {hex(blk_hi)}: {[hex(a) for a in program_addrs]}"
 
     # The whole 256-byte slab should land contiguously across the
-    # sector boundary in the model.
+    # block boundary in the model.
     assert bytes(flash.memory[_phys(target_addr):_phys(target_addr) + 256]) == payload
 
 
@@ -750,7 +750,7 @@ async def test_uf2_not_main_flash_flag_skips_write(dut):
     # SCSI/UF2 path doesn't issue at all, so the list should stay empty.
     await Timer(200, unit="us")
     write_opcodes = [t.opcode for t in flash.transactions
-                     if t.opcode in (0x06, 0x20, 0x02, 0x32)]
+                     if t.opcode in (0x06, 0x20, 0xD8, 0x02, 0x32)]
     assert not write_opcodes, (
         f"unexpected flash write activity for not-main-flash block: "
         f"{[hex(o) for o in write_opcodes]}"
@@ -927,7 +927,7 @@ async def test_scsi_write_off_end_lba_fails_gracefully(dut):
 
     await Timer(200, unit="us")
     write_opcodes = [t.opcode for t in flash.transactions
-                     if t.opcode in (0x06, 0x20, 0x02, 0x32)]
+                     if t.opcode in (0x06, 0x20, 0xD8, 0x02, 0x32)]
     assert not write_opcodes, (
         f"off-end WRITE_10 reached flash: {[hex(o) for o in write_opcodes]}"
     )
@@ -1109,9 +1109,9 @@ async def test_uf2_write_with_slow_flash_wip_polling(dut):
     status_reads = [t for t in flash.transactions if t.opcode == 0x05]
     page_programs = [t for t in flash.transactions
                      if t.opcode in (0x02, 0x32)]
-    sector_erases = [t for t in flash.transactions if t.opcode == 0x20]
+    block_erases = [t for t in flash.transactions if t.opcode == 0xD8]
     assert page_programs, f"no page-program observed (opcodes={[hex(t.opcode) for t in flash.transactions]})"
-    assert sector_erases, "no sector-erase observed"
+    assert block_erases, "no block-erase observed"
     # Reference: with WIP=0 the default test_uf2_write_triggers_program
     # produces 1-2 status reads
     assert len(status_reads) > 4, (
@@ -1127,8 +1127,8 @@ async def test_uf2_write_with_slow_flash_wip_polling(dut):
 @cocotb.test(timeout_time=TIMEOUT_UF2_MULTI, timeout_unit="us")
 async def test_uf2_random_blocks_land_in_flash(dut):
     """Fuzz the WRITE_10 → UF2 → flash pipeline with a few independent
-    UF2 blocks targeting pseudo-random sector-aligned addresses with
-    pseudo-random payloads. After each transfer, verify the bytes
+    UF2 blocks targeting pseudo-random 64 KiB-block-aligned addresses
+    with pseudo-random payloads. After each transfer, verify the bytes
     landed at the right offset and that the CSW status is clean.
     """
     import random
@@ -1138,15 +1138,16 @@ async def test_uf2_random_blocks_land_in_flash(dut):
     await host.set_address(0x12)
     await host.set_configuration(1)
 
-    # Stay well clear of GhostFAT's 0x0000..0x000F sectors and the
-    # off-end region exercised in Tier 2. Pick from the 0x10..0x7F
-    # sector range so each transfer hits a fresh 4 KiB sector.
-    sector_candidates = list(range(0x10, 0x80))
-    rng.shuffle(sector_candidates)
+    # Each block is an independent single-block image, so the writer
+    # re-erases the containing 64 KiB block per transfer. Pick *distinct*
+    # 64 KiB blocks (clear of GhostFAT's low region and the Tier-2 off-end
+    # region) so no transfer's erase clobbers a previously written block.
+    block_candidates = list(range(0x1, 0x0C))
+    rng.shuffle(block_candidates)
     n_blocks = 4
     blocks_under_test = []
-    for sector in sector_candidates[:n_blocks]:
-        target_addr = sector << 12     # sector-aligned
+    for block in block_candidates[:n_blocks]:
+        target_addr = block << 16      # 64 KiB-block-aligned
         # 256-byte payload (one full page program) of pseudo-random
         # bytes - keeps each write at a single PP, no page-spanning.
         payload = bytes(rng.randrange(256) for _ in range(256))
@@ -1420,7 +1421,7 @@ async def test_uf2_bad_start_magic_skipped_silently(dut):
     # reached the flash controller.
     await Timer(200, unit="us")
     write_opcodes = [t.opcode for t in flash.transactions
-                     if t.opcode in (0x06, 0x20, 0x02, 0x32)]
+                     if t.opcode in (0x06, 0x20, 0xD8, 0x02, 0x32)]
     assert not write_opcodes, (
         f"bad-start-magic block reached flash: {[hex(o) for o in write_opcodes]}"
     )

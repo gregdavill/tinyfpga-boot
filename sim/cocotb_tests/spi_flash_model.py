@@ -8,7 +8,8 @@ Implements only the opcodes the bootloader issues:
 * 0x05  Read Status Register      (poll WIP)
 * 0x02  Page Program (1-1-1)
 * 0x32  Quad Page Program         (1-1-4)
-* 0x20  Sector Erase (4 KiB)
+* 0x20  Sector Erase (4 KiB)      (boot header)
+* 0xD8  Block Erase (64 KiB)      (UF2/DFU bitstream write path)
 * 0x6B  Fast Read Quad Output     (1-1-4) - used by some boot ROMs
 * 0x0B  Fast Read                  (1-1-1)
 * 0xAB  Release Power-down / Read Device ID
@@ -88,6 +89,7 @@ class SPIFlashModel:
 
     PAGE_SIZE   = 256
     SECTOR_SIZE = 4096
+    BLOCK_SIZE  = 65536
 
     def __init__(self, dut, *, size: int = 16 * 1024 * 1024,
                  uid: bytes = b"\xCA\xFE\xBA\xBE\xDE\xAD\xBE\xEF",
@@ -186,7 +188,9 @@ class SPIFlashModel:
             elif tx.opcode == 0x32:
                 await self._cmd_page_program(tx, cs_idle, lanes=4)
             elif tx.opcode == 0x20:
-                await self._cmd_sector_erase(tx, cs_idle)
+                await self._cmd_erase(tx, cs_idle, self.SECTOR_SIZE)
+            elif tx.opcode == 0xD8:
+                await self._cmd_erase(tx, cs_idle, self.BLOCK_SIZE)
             elif tx.opcode == 0x0B:
                 await self._cmd_fast_read(tx, cs_idle, lanes=1)
             elif tx.opcode == 0x6B:
@@ -323,14 +327,14 @@ class SPIFlashModel:
             # holds WIP through the internal program time
             self._wip_remaining = self.wip_polls_after_write
 
-    async def _cmd_sector_erase(self, tx: FlashTransaction, cs_idle):
+    async def _cmd_erase(self, tx: FlashTransaction, cs_idle, erase_size: int):
         addr_bytes = await self._shift_in_bytes(3, lanes=1)
         addr = (addr_bytes[0] << 16) | (addr_bytes[1] << 8) | addr_bytes[2]
         tx.address = addr
         await cs_idle
         if self.status & 0x02:
-            base = addr & ~(self.SECTOR_SIZE - 1)
-            self.memory[base:base + self.SECTOR_SIZE] = b"\xFF" * self.SECTOR_SIZE
+            base = addr & ~(erase_size - 1)
+            self.memory[base:base + erase_size] = b"\xFF" * erase_size
             self.status &= ~0x02
             self._wip_remaining = self.wip_polls_after_write
 

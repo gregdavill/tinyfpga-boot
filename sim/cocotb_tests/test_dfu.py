@@ -118,7 +118,7 @@ async def test_dfu_set_interface_acks(dut):
 @cocotb.test(timeout_time=TIMEOUT_DFU, timeout_unit="us")
 async def test_dfu_download_programs_flash(dut):
     """A DNLOAD block followed by the zero-length manifestation lands the
-    bytes in flash via WREN -> sector erase -> WREN -> page program."""
+    bytes in flash via WREN -> block erase -> WREN -> page program."""
     host, flash = await _bringup(dut)
     await _enumerate(host)
 
@@ -136,7 +136,7 @@ async def test_dfu_download_programs_flash(dut):
 
     opcodes = [t.opcode for t in flash.transactions]
     assert 0x06 in opcodes, f"no write-enable observed (opcodes={[hex(o) for o in opcodes]})"
-    assert 0x20 in opcodes, f"no sector erase observed (opcodes={[hex(o) for o in opcodes]})"
+    assert 0xD8 in opcodes, f"no block erase observed (opcodes={[hex(o) for o in opcodes]})"
     program_ops = [t for t in flash.transactions if t.opcode in (0x02, 0x32)]
     assert program_ops, f"no page program observed (opcodes={[hex(o) for o in opcodes]})"
     assert program_ops[0].address == DFU_AREA_BASE, \
