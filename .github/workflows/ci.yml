@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        board: [tinyfpga_bx, orangecrab, ecpbreaker]
+        board: [tinyfpga_bx, orangecrab, ecpbreaker, butterstick]
         backend: [uf2, serial, dfu]
     steps:
       - uses: actions/checkout@v5
