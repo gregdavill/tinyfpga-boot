@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Program a W25Q128 security register with bootloader's UUID.
+"""Program a flash security register with the bootloader's UUID.
 
 The bootloader can read iSerialNumber from a small JSON blob stored in
 the flash *security register* (read with opcode 0x48). This tool writes that
@@ -9,11 +9,11 @@ The blob matches the gateware's JsonStringKeyParser:
 
     {"boardmeta": {"name": "<board>", "uuid": "<uuid>"}}
 
-W25Q128 security registers (each 256 bytes, rewritable until locked):
+Security registers are each 256 bytes (rewritable until locked), but address differs by vendor.
+The shift is auto-selected from the JEDEC manufacturer ID. override with --addr-offset-bits.
 
-    register 1 -> flash address 0x001000
-    register 2 -> flash address 0x002000
-    register 3 -> flash address 0x003000
+    Adesto/Renesas (e.g. AT25SF081): offset 0 -> 0x000100 / 0x000200 / 0x000300
+    Winbond        (e.g. W25Q128):   offset 4 -> 0x001000 / 0x002000 / 0x003000
 
 ```
 python tools/program_security_page.py --name "OrangeCrab r0.2"
@@ -30,7 +30,7 @@ import usb.core
 import uuid6
 
 
-# --- W25Q128 command set
+# --- security-register command set (shared by Adesto AT25SF0x / Winbond W25Qxx)
 WREN      = 0x06
 RDSR1     = 0x05
 RDID      = 0x9F
@@ -39,17 +39,24 @@ SEC_PROG  = 0x42
 SEC_ERASE = 0x44
 
 WIP_BIT    = 0x01
-W25Q128_ID = (0xEF, 0x40, 0x18)
 SEC_REG_SIZE = 256
+
+# Security-register address shift keyed by JEDEC manufacturer ID (first byte).
+# Matches the gateware's per-board `security_page_addr_offset_bits`.
+SEC_ADDR_OFFSET_BITS = {
+    0x1F: 0,   # Adesto / Renesas (e.g. AT25SF081) -> 0x100 / 0x200 / 0x300
+    0xEF: 4,   # Winbond          (e.g. W25Q128)   -> 0x1000 / 0x2000 / 0x3000
+}
+DEFAULT_OFFSET_BITS = 0
 
 DEFAULT_VID = 0x1209   # UF2 / DFU personalities present these IDs
 DEFAULT_PID = 0x5af0
 
 
-def reg_addr(n):
+def reg_addr(n, offset_bits):
     if n not in (1, 2, 3):
         raise SystemExit("register must be 1, 2 or 3")
-    return n << 12                     # 0x1000 / 0x2000 / 0x3000
+    return n << (8 + offset_bits)
 
 
 def addr3(a):
@@ -86,7 +93,7 @@ class VendorSpiBridge:
 
 
 class Flash:
-    """W25Q128 SPI commands"""
+    """Security-register SPI commands (Adesto/Winbond compatible)."""
 
     def __init__(self, spi):
         self._spi = spi
@@ -136,7 +143,10 @@ def main():
     ap.add_argument("--pid", type=lambda x: int(x, 0), default=DEFAULT_PID,
                     help="USB idProduct (default: 0x5af0)")
     ap.add_argument("--register", type=int, default=1, choices=(1, 2, 3),
-                    help="security register to use (default: 1 -> 0x001000)")
+                    help="security register to use (default: 1)")
+    ap.add_argument("--addr-offset-bits", type=int, default=None,
+                    help="security-register address shift (default: auto from "
+                         "JEDEC ID; Adesto=0 -> 0x100, Winbond=4 -> 0x1000)")
     ap.add_argument("--uuid", default=None,
                     help="UUID string to store (default: a fresh uuid7)")
     ap.add_argument("--name", default="OrangeCrab r0.2",
@@ -153,7 +163,12 @@ def main():
 
     jid = flash.jedec()
     print(f"JEDEC ID: {' '.join(f'{b:02X}' for b in jid)}")
-    addr = reg_addr(args.register)
+
+    if args.addr_offset_bits is not None:
+        offset_bits = args.addr_offset_bits
+    else:
+        offset_bits = SEC_ADDR_OFFSET_BITS.get(jid[0], DEFAULT_OFFSET_BITS)
+    addr = reg_addr(args.register, offset_bits)
 
     if args.read:
         print(f"security register #{args.register} @ 0x{addr:06X}:")
