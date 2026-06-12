@@ -5,9 +5,11 @@ The bootloader can read iSerialNumber from a small JSON blob stored in
 the flash *security register* (read with opcode 0x48). This tool writes that
 blob using a **vendor EP0 SPI bridge** over USB.
 
-The blob matches the gateware's JsonStringKeyParser:
+The blob matches the gateware's JsonStringKeyParser. Gateware just scans for "uuid" as its
+USB serial descriptior value.
 
-    {"boardmeta": {"name": "<board>", "uuid": "<uuid>"}}
+    {"boardmeta": {"name": "<board>", "fpga": "<part>", "hver": "<ver>",
+                   "uuid": "<uuid>"}}
 
 Security registers are each 256 bytes (rewritable until locked), but address differs by vendor.
 The shift is auto-selected from the JEDEC manufacturer ID. override with --addr-offset-bits.
@@ -16,7 +18,7 @@ The shift is auto-selected from the JEDEC manufacturer ID. override with --addr-
     Winbond        (e.g. W25Q128):   offset 4 -> 0x001000 / 0x002000 / 0x003000
 
 ```
-python tools/program_security_page.py --name "OrangeCrab r0.2"
+python tools/program_security_page.py --name "TinyFPGA BX" --fpga ice40lp8k-cm81 --hver 1.0.0
 python tools/program_security_page.py --read
 ```
 """
@@ -61,6 +63,28 @@ def reg_addr(n, offset_bits):
 
 def addr3(a):
     return [(a >> 16) & 0xFF, (a >> 8) & 0xFF, a & 0xFF]
+
+
+def parse_meta_fields(tokens):
+    """Collect leftover ``--key value`` / ``--key=value`` CLI tokens into a dict
+    of board-metadata fields."""
+    meta = {}
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok.startswith("--"):
+            raise SystemExit(f"unexpected argument: {tok!r}")
+        key = tok[2:]
+        if "=" in key:
+            key, val = key.split("=", 1)
+            i += 1
+        elif i + 1 < len(tokens) and not tokens[i + 1].startswith("--"):
+            val = tokens[i + 1]
+            i += 2
+        else:
+            raise SystemExit(f"option --{key} expects a value")
+        meta[key] = val
+    return meta
 
 
 class VendorSpiBridge:
@@ -149,15 +173,15 @@ def main():
                          "JEDEC ID; Adesto=0 -> 0x100, Winbond=4 -> 0x1000)")
     ap.add_argument("--uuid", default=None,
                     help="UUID string to store (default: a fresh uuid7)")
-    ap.add_argument("--name", default="OrangeCrab r0.2",
-                    help="board name stored alongside the uuid")
     ap.add_argument("--read", action="store_true",
                     help="just read and print the register, don't write")
     ap.add_argument("--no-erase", action="store_true",
                     help="skip the erase step (only if the register is blank)")
     ap.add_argument("--yes", action="store_true",
                     help="don't prompt before erasing/programming")
-    args = ap.parse_args()
+    # Any other `--key value` becomes a boardmeta field, e.g.
+    #   --name "TinyFPGA BX" --fpga ice40lp8k-cm81 --hver 1.0.0
+    args, extra = ap.parse_known_args()
 
     flash = Flash(VendorSpiBridge.open(args.vid, args.pid))
 
@@ -179,7 +203,11 @@ def main():
     if len(uuid_str) > 36:
         raise SystemExit("uuid longer than 36 chars (gateware descriptor max_len)")
 
-    blob = json.dumps({"boardmeta": {"name": args.name, "uuid": uuid_str}}).encode()
+    # Only `uuid` is required; any other `--key value` is optional metadata.
+    meta = parse_meta_fields(extra)
+    meta["uuid"] = uuid_str
+
+    blob = json.dumps({"boardmeta": meta}).encode()
     if len(blob) > SEC_REG_SIZE:
         raise SystemExit(f"payload {len(blob)} B exceeds the security register")
     print(f"payload ({len(blob)} B): {blob.decode()}")
