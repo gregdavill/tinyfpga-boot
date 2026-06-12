@@ -8,6 +8,7 @@ from luna.usb2               import USBDevice
 from config import SerialSource
 
 from blocks.qspi import Controller
+from blocks.flash_wake import FlashWake
 from blocks.serial_source import FlashUidSerialSource, SecurityPageSerialSource
 from blocks.usb.serial_handler import USBStreamSerialDescriptorHandler
 from blocks.usb.vendor_spi import VendorSpiHandler
@@ -160,6 +161,9 @@ class Top(Elaboratable):
 
         m.submodules.serial_source = ss = self.serial_source
 
+        # Wake the flash from any post-config deep power-down
+        m.submodules.flash_wake = flash_wake = FlashWake()
+
         for idx, src in enumerate(self.stay_sources):
             m.submodules[f"stay_{idx}"] = src
 
@@ -224,7 +228,7 @@ class Top(Elaboratable):
         # Flash consumers sequenced over the shared QSPI bus at boot: the serial
         # source first, then any flash-backed stay sources. Each is granted the
         # bus in turn (req held, wait for done).
-        flash_clients = [ss] + [s for s in self.stay_sources if s.needs_flash]
+        flash_clients = [flash_wake, ss] + [s for s in self.stay_sources if s.needs_flash]
         sel = Signal(range(len(flash_clients) + 1))
 
         with m.FSM():

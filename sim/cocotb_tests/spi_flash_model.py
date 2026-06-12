@@ -358,10 +358,15 @@ class SPIFlashModel:
         tx.read_data = bytes(out)
 
     async def _cmd_release_pd(self, tx: FlashTransaction, cs_idle):
-        # Reply with one ID byte if the host clocks one out.
-        await self._shift_in(24, lanes=1)
-        await self._shift_out(b"\x14", lanes=1)
+        # 0xAB alone (CS# rises right after the opcode) = Release Power-Down.
+        # 0xAB + 24 dummy bits + 1 byte out = Read Device ID.
+        async def id_phase():
+            await self._shift_in(24, lanes=1)
+            await self._shift_out(b"\x14", lanes=1)
+
+        task = cocotb.start_soon(id_phase())
         await cs_idle
+        task.cancel()
 
     # ------------------------------------------------------------------
     # Memory primitives

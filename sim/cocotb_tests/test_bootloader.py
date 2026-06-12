@@ -62,9 +62,14 @@ async def test_boot_reads_uid(dut):
     _, flash = await _bringup(dut)
 
     assert flash.transactions, "no SPI activity observed before USB connect"
-    first = flash.transactions[0]
-    assert first.opcode == 0x4B, f"expected Read UID (0x4B), got {first.opcode:#04x}"
-    assert first.read_data == flash.uid
+    # The flash-wake runs first: Mode-Bit-Reset (0xFF) then Release-Power-Down
+    # (0xAB), before the UID read.
+    assert [t.opcode for t in flash.transactions[:2]] == [0xFF, 0xAB], \
+        f"expected flash wake (0xFF, 0xAB), got " \
+        f"{[hex(t.opcode) for t in flash.transactions[:2]]}"
+    uid_reads = [t for t in flash.transactions if t.opcode == 0x4B]
+    assert uid_reads, "no Read UID (0x4B) issued before USB connect"
+    assert uid_reads[0].read_data == flash.uid
 
 
 @cocotb.test(timeout_time=TIMEOUT_DESC, timeout_unit="us")
