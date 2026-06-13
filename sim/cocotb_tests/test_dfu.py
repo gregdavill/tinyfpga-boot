@@ -70,6 +70,40 @@ async def _enumerate(host):
     await host.set_configuration(1)
     return cfg
 
+@cocotb.test(timeout_time=TIMEOUT_BOOT, timeout_unit="us")
+async def test_dfu_warmboots_after_host_goes_idle(dut):
+    """The post-download warmboot waits until the host stops talking, so the
+    device survives dfu-util's GETSTATUS polling."""
+    host, _ = await _bringup(dut)
+    await _enumerate(host)
+
+    payload = bytes((i ^ 0x5A) & 0xFF for i in range(64))
+    await host.control_out(RT_CLASS_IF_OUT, DFU_DNLOAD, w_value=0, w_index=0, data=payload)
+    await host.control_out(RT_CLASS_IF_OUT, DFU_DNLOAD, w_value=1, w_index=0, data=b"")
+
+    # While the host keeps polling GETSTATUS the device must stay up: each poll
+    # is USB tx activity that holds off the warmboot. Without that gate the idle
+    # window (~85 µs in sim) would elapse during this loop and reboot early.
+    for _ in range(40):
+        await host.control_in(RT_CLASS_IF_IN, DFU_GETSTATUS, w_index=0, w_length=6)
+        try:
+            assert int(dut.reconfigure.boot.value) == 0, \
+                "SB_WARMBOOT.BOOT fired while the host was still polling GETSTATUS"
+        except ValueError:
+            continue
+
+    # Host goes quiet -> warmboot fires after the idle window.
+    boot_seen = False
+    for _ in range(3000):
+        await Timer(1, unit="us")
+        try:
+            if int(dut.reconfigure.boot.value) == 1:
+                boot_seen = True
+                break
+        except (AttributeError, ValueError):
+            continue
+    assert boot_seen, "SB_WARMBOOT.BOOT never pulsed after the host went idle"
+
 
 @cocotb.test(timeout_time=TIMEOUT_ENUM, timeout_unit="us")
 async def test_dfu_enumeration(dut):
@@ -144,26 +178,3 @@ async def test_dfu_download_programs_flash(dut):
 
     assert bytes(flash.memory[DFU_AREA_BASE:DFU_AREA_BASE + len(payload)]) == payload, \
         "flash contents do not match the DFU payload"
-
-
-@cocotb.test(timeout_time=TIMEOUT_BOOT, timeout_unit="us")
-async def test_dfu_manifest_triggers_warmboot(dut):
-    """After the manifestation DNLOAD, the bootloader hands off to the
-    freshly-flashed image via SB_WARMBOOT"""
-    host, _ = await _bringup(dut)
-    await _enumerate(host)
-
-    payload = bytes((i ^ 0x5A) & 0xFF for i in range(64))
-    await host.control_out(RT_CLASS_IF_OUT, DFU_DNLOAD, w_value=0, w_index=0, data=payload)
-    await host.control_out(RT_CLASS_IF_OUT, DFU_DNLOAD, w_value=1, w_index=0, data=b"")
-
-    boot_seen = False
-    for _ in range(3000):
-        await Timer(1, unit="us")
-        try:
-            if int(dut.reconfigure.boot.value) == 1:
-                boot_seen = True
-                break
-        except (AttributeError, ValueError):
-            continue
-    assert boot_seen, "SB_WARMBOOT.BOOT never pulsed after DFU manifestation"

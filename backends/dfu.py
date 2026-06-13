@@ -134,4 +134,6 @@ class DfuBackend(Backend):
         with m.Elif(activity):
             m.d.comb += self.status.eq(Status.ACTIVE)
 
-        return Reconfig(arm=arm, activity=activity)
+        # Hold off the post-download warmboot until the host has stopped
+        # talking. After the download dfu-util keeps polling GETSTATUS.
+        return Reconfig(arm=arm, activity=activity | usb.tx_activity_led)
