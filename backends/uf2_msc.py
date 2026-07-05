@@ -108,7 +108,8 @@ class Uf2MscBackend(Backend):
             wiring.connect(m, uf2.o, flash.i)
             self.qo, self.qi = flash.qo, flash.qi
             arm = uf2.done
-            activity = scsi.rx.valid | scsi.tx.valid | flash.qo.valid
+            writing  = flash.qo.valid
+            activity = scsi.rx.valid | scsi.tx.valid | writing
         else:
             m.submodules.writer = writer = self.writer
 
@@ -133,14 +134,15 @@ class Uf2MscBackend(Backend):
             ]
             self.qo, self.qi = writer.qo, writer.qi
             arm = writer.arm
-            activity = scsi.rx.valid | scsi.tx.valid | writer.active
+            writing  = writer.active
+            activity = scsi.rx.valid | scsi.tx.valid | writing
 
-        # Status: ERROR (bad UF2) > DONE (decode, reload) > ACTIVE (USB traffic) > IDLE (default).
+        # Status: ERROR (bad UF2) > DONE (decode, reload) > ACTIVE (image being written) > IDLE (default).
         with m.If(uf2.error):
             m.d.comb += self.status.eq(Status.ERROR)
         with m.Elif(uf2.done):
             m.d.comb += self.status.eq(Status.DONE)
-        with m.Elif(activity):
+        with m.Elif(writing):
             m.d.comb += self.status.eq(Status.ACTIVE)
 
         return Reconfig(arm=arm, activity=activity)
