@@ -34,6 +34,14 @@ SET_INTERFACE = 0x0B
 # Single DFU area maps to the slot-1 reload region (see _fs_sim_config).
 DFU_AREA_BASE = 0x40000
 
+# Microsoft OS 1.0 descriptors — how Windows auto-installs WinUSB on the
+# driverless DFU interface (see top.py). The 0xEE OS string advertises a
+# vendor request code; here it must match MSFT_VENDOR_CODE in top.py.
+MS_OS_STRING_INDEX  = 0xEE
+MSFT_VENDOR_CODE    = 0xEE
+MS_COMPAT_ID_INDEX  = 0x0004    # wIndex for the Extended Compat ID descriptor
+RT_VENDOR_DEV_IN    = 0xC0      # vendor | device recipient, device -> host
+
 TIMEOUT_ENUM = 2_000   # full enumeration walk
 TIMEOUT_DFU  = 5_000   # DNLOAD + page-program drain
 TIMEOUT_BOOT = 8_000   # DNLOAD + manifest + ~2.5 ms idle window
@@ -126,6 +134,34 @@ async def test_dfu_enumeration(dut):
     assert len(func) == 9, f"DFU functional descriptor is {len(func)} bytes, expected 9"
     transfer_size = func[5] | (func[6] << 8)
     assert transfer_size == 256, f"wTransferSize = {transfer_size}, expected 256"
+
+
+@cocotb.test(timeout_time=TIMEOUT_ENUM, timeout_unit="us")
+async def test_dfu_winusb_auto_install(dut):
+    """Windows' MS OS 1.0 flow: read the 0xEE OS string for the vendor code,
+    then fetch the Extended Compat ID descriptor and find "WINUSB" bound to the
+    DFU interface. This is what lets Windows load winusb.sys without Zadig."""
+    host, _ = await _bringup(dut)
+    await _enumerate(host)
+
+    # 1) OS string descriptor at index 0xEE: "MSFT100" + vendor request code.
+    os_str = await host.get_descriptor(
+        descriptor_type=0x03, index=MS_OS_STRING_INDEX, length=0x12)
+    assert os_str[2:16] == "MSFT100".encode("utf-16-le"), \
+        f"bad MS OS signature: {os_str.hex()}"
+    vendor_code = os_str[16]
+    assert vendor_code == MSFT_VENDOR_CODE, \
+        f"vendor code {vendor_code:#x} != {MSFT_VENDOR_CODE:#x}"
+
+    # 2) Extended Compat ID descriptor via that vendor request (wIndex = 4).
+    compat = await host.control_in(
+        RT_VENDOR_DEV_IN, vendor_code,
+        w_value=0, w_index=MS_COMPAT_ID_INDEX, w_length=0x28)
+    # Header is 16 bytes; each function section is 24. The first section's
+    # bFirstInterfaceNumber is the DFU interface and its compatibleID "WINUSB".
+    assert compat[16] == 0, f"compat-ID first-interface = {compat[16]}, expected 0"
+    assert compat[18:24] == b"WINUSB", \
+        f"compatibleID = {compat[18:26].hex()}, expected WINUSB"
 
 
 @cocotb.test(timeout_time=TIMEOUT_ENUM, timeout_unit="us")

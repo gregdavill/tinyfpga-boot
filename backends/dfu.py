@@ -91,6 +91,11 @@ class DfuBackend(Backend):
     def request_handlers(self):
         return [self.dfu]
 
+    def msft_compat_ids(self):
+        # DFU is an Application-Specific interface with no in-box Windows
+        # driver; bind WinUSB so dfu-util works
+        return [(self._IF_NUM, "WINUSB")]
+
     def endpoints(self):
         return []  # EP0 control only
 

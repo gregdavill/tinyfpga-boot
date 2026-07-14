@@ -38,6 +38,12 @@ class CompositeBackend(Backend):
             handlers += child.request_handlers()
         return handlers
 
+    def msft_compat_ids(self):
+        ids = []
+        for child in self.children:
+            ids += child.msft_compat_ids()
+        return ids
+
     def endpoints(self):
         eps = []
         for child in self.children:

@@ -19,6 +19,17 @@ from staysource import NoValidAppStaySource
 from staysource.no_valid_app import SYNC_WORDS, POISON_WORD
 
 
+# Vendor request code Windows uses to fetch the MS OS 1.0 feature descriptors,
+# advertised in the 0xEE OS string descriptor.
+MSFT_VENDOR_CODE = 0xEE
+
+
+def _ms_os_string_descriptor(vendor_code):
+    """MS OS 1.0 string descriptor served at string index 0xEE: the "MSFT100"
+    signature, the vendor request code, and a pad byte (18 bytes total)."""
+    return bytes([0x12, 0x03]) + "MSFT100".encode("utf-16-le") + bytes([vendor_code, 0x00])
+
+
 class Top(Elaboratable):
     def __init__(self, config=None):
         self.config = config
@@ -61,6 +72,26 @@ class Top(Elaboratable):
         # --- Vendor EP0 bridge ---
         self.vendor_spi = VendorSpiHandler()
 
+        # --- Windows WinUSB auto-install (MS OS 1.0) ---
+        self.msft_handler = self.create_msft_handler()
+
+    def create_msft_handler(self):
+        compat_ids = self.backend.msft_compat_ids()
+        if not compat_ids:
+            return None
+
+        from usb_protocol.emitters.descriptors.microsoft10 import (
+            MicrosoftOS10DescriptorCollection)
+        from luna.gateware.usb.request.windows import MicrosoftOS10RequestHandler
+
+        ms = MicrosoftOS10DescriptorCollection()
+        with ms.ExtendedCompatIDDescriptor() as d:
+            for if_num, compat in compat_ids:
+                with d.Function() as f:
+                    f.bFirstInterfaceNumber = if_num
+                    f.compatibleID          = compat
+        return MicrosoftOS10RequestHandler(ms, request_code=MSFT_VENDOR_CODE)
+
     def create_descriptors(self, hs):
         """ Create the descriptors we want to use for our device. The device
         descriptor's identity comes from the active backend; the configuration
@@ -98,6 +129,13 @@ class Top(Elaboratable):
 
         with descriptors.ConfigurationDescriptor() as c:
             self.backend.populate_configuration(c, bulk_mps=bulk_mps)
+
+        # MS OS 1.0 OS string descriptor (string index 0xEE). Its presence tells
+        # Windows to fetch the compatible-ID feature descriptor via the vendor
+        # request handler; only added when a backend actually needs WinUSB.
+        if self.backend.msft_compat_ids():
+            descriptors.add_descriptor(_ms_os_string_descriptor(MSFT_VENDOR_CODE),
+                                       index=0xEE, descriptor_type=3)
 
         # A high-speed-capable device must additionally answer
         # GET_DESCRIPTOR(DEVICE_QUALIFIER) and GET_DESCRIPTOR(OTHER_SPEED_
@@ -177,6 +215,10 @@ class Top(Elaboratable):
         ep = usb.add_standard_control_endpoint(self.descriptors, skiplist=skiplist)
         ep.add_request_handler(self.serial_handler)
         ep.add_request_handler(self.vendor_spi)
+        # MS OS 1.0 handler claims only its vendor request, so it needs no
+        # skiplist entry against the standard request handler.
+        if self.msft_handler is not None:
+            ep.add_request_handler(self.msft_handler)
         for handler in backend_handlers:
             ep.add_request_handler(handler)
         m.d.comb += [

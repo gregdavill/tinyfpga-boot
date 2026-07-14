@@ -84,6 +84,11 @@ class Backend:
         """Class control-request handlers to add to the control endpoint."""
         return []
 
+    def msft_compat_ids(self):
+        """`(bFirstInterfaceNumber, compatibleID)` pairs for interfaces that
+        need a Windows MS OS 1.0 compatible-ID (e.g. "WINUSB")."""
+        return []
+
     def endpoints(self):
         """Wrapped LUNA endpoints to add to the device."""
         return []
