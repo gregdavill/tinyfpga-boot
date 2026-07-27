@@ -1,11 +1,11 @@
 """Fomu PVT (iCE40 UP5K)"""
 
 from amaranth import *
-from amaranth_boards.fomu_pvt import FomuPVTPlatform as _FomuBase
+from amaranth_boards.fomu_hacker import FomuHackerPlatform as _FomuBase
 
 from platforms import ICE40Mixin
 from config import BoardConfig, SerialSource, SLOT1_OFFSET, Backend
-from staysource import WriteEnableStaySource
+from staysource import WriteEnableStaySource, AlwaysStaySource
 
 
 class FomuPVTPlatform(ICE40Mixin, _FomuBase):
@@ -40,8 +40,8 @@ board = BoardConfig(
     vid=0x1209,
     pid=0x5bf0,
     manufacturer="Foosn",
-    board_id="Fomu-PVT",
-    model="Fomu PVT",
+    board_id="Fomu-Hacker",
+    model="Fomu Hacker",
     url="https://tomu.im",
     scsi_vendor="FOMU",
     scsi_product="UF2 Bootloader",
@@ -49,5 +49,5 @@ board = BoardConfig(
     backend=[Backend.UF2_MSC, Backend.DFU],
     reload_slot=1,
     reload_image_offset=SLOT1_OFFSET,
-    stay_sources=(WriteEnableStaySource,),
+    stay_sources=(WriteEnableStaySource, AlwaysStaySource),
 )
