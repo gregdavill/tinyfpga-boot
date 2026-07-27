@@ -1,7 +1,7 @@
 from amaranth.lib import io
 
 
-__all__ = ["PortGroup"]
+__all__ = ["PortGroup", "X1QuadDq"]
 
 
 class PortGroup:
@@ -45,3 +45,26 @@ def SimulationPort_with_direction(self, direction):
     self._direction = io.Direction(direction)
     return self
 io.SimulationPort.with_direction = SimulationPort_with_direction
+
+
+class X1QuadDq:
+    """Adapt an x1 SPI flash w/ COPI/CIPO pins, to a quad `Controller`'s 4-lane `dq`."""
+
+    direction = io.Direction.Bidir
+
+    def __init__(self, copi, cipo):
+        self._lanes = [self._bidir(copi), self._bidir(cipo),
+                       io.SimulationPort("io", 1), io.SimulationPort("io", 1)]
+
+    @staticmethod
+    def _bidir(port):
+        # Real hardware pads are SingleEndedPort; Sim hands us SimulationPorts.
+        if isinstance(port, io.SingleEndedPort):
+            return io.SingleEndedPort(port.io, direction=io.Direction.Bidir)
+        return port.with_direction(io.Direction.Bidir)
+
+    def __len__(self):
+        return len(self._lanes)
+
+    def __getitem__(self, index):
+        return self._lanes[index]

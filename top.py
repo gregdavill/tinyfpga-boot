@@ -1,6 +1,6 @@
 from amaranth import *
 from amaranth.lib import wiring, io
-from blocks.ports import PortGroup
+from blocks.ports import PortGroup, X1QuadDq
 
 from usb_protocol.emitters   import DeviceDescriptorCollection
 from luna.usb2               import USBDevice
@@ -201,14 +201,8 @@ class Top(Elaboratable):
             # SPI controller, but hook up just io0/io1
             # TODO:: will break if we ever start using QUAD instructions
             flash_io = platform.request('spi_flash_1x', dir='-')
-            dq = io.SimulationPort("io", 4)
-            m.submodules.flash_copi = copi = io.Buffer("o", flash_io.copi)
-            m.submodules.flash_cipo = cipo = io.Buffer("i", flash_io.cipo)
-            m.d.comb += [
-                copi.o.eq(dq.o[0]),     # io0 -> COPI pad
-                dq.i[1].eq(cipo.i),     # io1 <- CIPO pad
-            ]
-            qspi_ports = PortGroup(cs=flash_io.cs, clk=flash_io.clk, dq=dq)
+            qspi_ports = PortGroup(cs=flash_io.cs, clk=flash_io.clk,
+                                   dq=X1QuadDq(flash_io.copi, flash_io.cipo))
             m.submodules.qspi = qspi = Controller(qspi_ports, chip_count=1, offset=0)
         else:
             raise ValueError(

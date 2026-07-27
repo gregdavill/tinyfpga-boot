@@ -63,7 +63,7 @@ class PassthroughDDRBuffer(io.DDRBuffer):
         m = Module()
 
         if self.direction is not io.Direction.Output:
-            m.d.comb += self.i.eq(self._port.i)
+            m.d.comb += self.i.eq(self._port.i.replicate(2))
 
         if self.direction is not io.Direction.Input:
             m.d.comb += self._port.o.eq(self.o)
