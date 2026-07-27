@@ -1,9 +1,29 @@
 import argparse
-import subprocess
 from pathlib import Path
 
 from config import BOARDS, MULTIBOOT_ALIGN_BITS, SLOT1_OFFSET, Backend
 from top import Top
+
+
+# iCE40 warmboot multiboot header: 5 x 32-byte boot-image records that each name
+# a 24-bit flash boot address. The constant bytes are the fixed cold/warm-boot
+# preamble.
+# Record 0 is the cold-boot image.
+# Records 1-4 are four SB_WARMBOOT slots.
+_HEADER_LEN = 5 * 32  # 0xA0; the bootloader image is appended right after.
+
+
+def _multiboot_boot_record(addr):
+    return (bytes([0x7E, 0xAA, 0x99, 0x7E, 0x92, 0x00, 0x00, 0x44, 0x03])
+            + bytes([(addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF])
+            + bytes([0x82, 0x00, 0x00, 0x01, 0x08]) + bytes(15))
+
+
+def _multiboot_header(*, boot_offset, reload_slot, reload_offset):
+    """5-record header pointing the reload warmboot slot at the user image.    """
+    addrs = [boot_offset] * 5
+    addrs[reload_slot + 1] = reload_offset      # record 0 = cold-boot; +1 = slot
+    return b"".join(_multiboot_boot_record(a) for a in addrs)
 
 
 def build(config, *, build_dir="build", do_program=False):
@@ -39,7 +59,7 @@ def build(config, *, build_dir="build", do_program=False):
     if config.reload_slot == 1 and config.reload_image_offset != SLOT1_OFFSET:
         raise SystemExit(
             f"reload_image_offset {config.reload_image_offset:#x} does not "
-            f"match the icemulti slot-1 offset {SLOT1_OFFSET:#x} "
+            f"match the multiboot slot-1 offset {SLOT1_OFFSET:#x} "
             f"(MULTIBOOT_ALIGN_BITS={MULTIBOOT_ALIGN_BITS})."
         )
 
@@ -55,15 +75,17 @@ def build(config, *, build_dir="build", do_program=False):
             f"slot size {SLOT1_OFFSET:#x}"
         )
 
+    # The bootloader sits right after the multiboot header, cold-boot reads it
+    # from ~0x0; the reload slot points at the user-image region so a warmboot
+    # after an upload lands there.
     multiboot = out / "multiboot.bin"
-    # `-a` (lowercase) leaves image 0 unaligned, so the bootloader sits right
-    # after the multiboot header and cold-boot reads it from ~0x0.
-    subprocess.run(
-        ["icemulti", f"-a{MULTIBOOT_ALIGN_BITS}", "-p0",
-         "-o", str(multiboot), str(boot_bin)],
-        check=True,
+    header = _multiboot_header(
+        boot_offset=_HEADER_LEN,
+        reload_slot=config.reload_slot,
+        reload_offset=config.reload_image_offset,
     )
-    print(f"wrote {multiboot} (bootloader @ ~0x0, "
+    multiboot.write_bytes(header + boot_bin.read_bytes())
+    print(f"wrote {multiboot} (bootloader @ {_HEADER_LEN:#x}, "
           f"slot {config.reload_slot} = user image @ {config.reload_image_offset:#x})")
     return multiboot
 
