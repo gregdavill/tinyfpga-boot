@@ -21,13 +21,13 @@ class FlashSpec(Elaboratable):
         m.submodules.dut = dut = QspiFlash()
 
         m.d.comb += [
-            dut.i.valid.eq(AnySeq(1)),
-            dut.i.p.addr.eq(AnySeq(24)),
-            dut.i.p.data.eq(AnySeq(8)),
+            dut.port.w.valid.eq(AnySeq(1)),
+            dut.port.w.p.addr.eq(AnySeq(24)),
+            dut.port.w.p.data.eq(AnySeq(8)),
             dut.qo.ready.eq(AnySeq(1)),
             dut.qi.valid.eq(AnySeq(1)),
             dut.qi.p.data.eq(AnySeq(8)),
-            dut.done.eq(AnySeq(1)),
+            dut.port.flush.eq(AnySeq(1)),
         ]
 
         chip = dut.qo.p.chip

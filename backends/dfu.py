@@ -7,13 +7,10 @@ DFU uses EP0, so there are no data endpoints.
 
 import struct
 
-from amaranth import Signal, ResetInserter
-from amaranth.lib import wiring
+from amaranth import Signal
 
-from blocks.flash import QspiFlash
 from blocks.dfu import DFUHandler, DFUState
-from blocks.dual_bank_writer import DualBankWriter
-from tools.ecp_bitstream import flash_header
+from blocks.flash import FlashPort
 
 from . import Backend, Reconfig, Status
 
@@ -45,6 +42,7 @@ def _dfu_functional_descriptor(*, transfer_size, detach_timeout_ms=1000):
 class DfuBackend(Backend):
     device_class = (0, 0, 0)
     personality = "DFU"
+    writes_flash = True
 
     _RAM_ALT = 1   # bAlternateSetting that targets the QSPI PSRAM
 
@@ -63,13 +61,11 @@ class DfuBackend(Backend):
             self.alt_names = [config.model]
 
         self.dfu = DFUHandler(if_num=self._IF_NUM, areas=self.areas)
-        if self.has_ram_bank:
-            self.writer = DualBankWriter(
-                header_bytes=flash_header(),
-                base_addr=config.reload_image_offset)
-            self.cfg_ctrl_o = self.writer.cfg_ctrl_o
-        else:
-            self.flash = QspiFlash()
+
+        # Flash-write port + status fed back by bind_writers from the backing.
+        self.wr      = FlashPort.create()
+        self.writing = Signal()   # backing.active
+        self.arm_in  = Signal()   # backing.arm
 
     def populate_configuration(self, c, *, bulk_mps):
         c.bMaxPower = 100
@@ -105,30 +101,22 @@ class DfuBackend(Backend):
         flushing = Signal()
         with m.If(self.dfu.manifest):
             m.d.sync += flushing.eq(1)
+        # A fresh download clears a stale flush
+        with m.Elif(self.dfu.download_start):
+            m.d.sync += flushing.eq(0)
 
-        if not self.has_ram_bank:
-            m.submodules.flash = flash = ResetInserter(usb.reset_detected)(self.flash)
-            # DFUHandler emits an (addr, data) stream straight into the flash writer.
-            wiring.connect(m, self.dfu.source, flash.i)
-            m.d.comb += flash.done.eq(flushing)
-            self.qo, self.qi = flash.qo, flash.qi
-            arm = flushing
-            activity = self.dfu.source.valid | flash.qo.valid
-        else:
-            # The shared dual-bank writer routes the download to FLASH or PSRAM
-            # by alt-setting.
-            m.submodules.writer = writer = self.writer
-            m.d.comb += [
-                writer.i.p.eq(self.dfu.source.p),
-                writer.i.valid.eq(self.dfu.source.valid),
-                self.dfu.source.ready.eq(writer.i.ready),
-                writer.ram_select.eq(self.dfu.area_sel == self._RAM_ALT),
-                writer.done.eq(flushing),
-                writer.clear.eq(usb.reset_detected),
-            ]
-            self.qo, self.qi = writer.qo, writer.qi
-            arm = writer.arm
-            activity = self.dfu.source.valid | writer.active
+        # Drive the flash-write port; `bind_writers` connects it to the backing
+        # and feeds back `writing`/`arm_in`.
+        m.d.comb += [
+            self.wr.w.p.eq(self.dfu.source.p),
+            self.wr.w.valid.eq(self.dfu.source.valid),
+            self.dfu.source.ready.eq(self.wr.w.ready),
+            self.wr.flush.eq(flushing),
+            self.wr.ram_select.eq(
+                (self.dfu.area_sel == self._RAM_ALT) if self.has_ram_bank else 0),
+        ]
+        arm      = self.arm_in
+        activity = self.dfu.source.valid | self.writing
 
         # Status: DONE (manifestation / boot-arm) > ACTIVE (writing) > IDLE.
         # TODO: report ERROR

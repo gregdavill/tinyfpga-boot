@@ -50,6 +50,8 @@ class DFUHandler(USBRequestHandler):
         self.new_request = Signal()
         #: 1-cycle strobe on the zero-length final DNLOAD (download complete).
         self.manifest = Signal()
+        #: 1-cycle strobe on the first DNLOAD of a session (fresh download).
+        self.download_start = Signal()
         self.request_done = Signal()
         self.state = Signal(8, reset=DFUState.dfuIDLE)
 
@@ -106,6 +108,7 @@ class DFUHandler(USBRequestHandler):
             # (state already dfuDNLOAD_IDLE) keep incrementing `addr`.
             with m.If(self.state == DFUState.dfuIDLE):
                 m.d.usb += self.addr.eq(self.areas[self.area_sel])
+                m.d.usb += self.download_start.eq(1)
 
             # A zero-length DNLOAD ends the transfer (manifestation).
             with m.If(self.interface.setup.length == 0):
@@ -165,6 +168,7 @@ class DFUHandler(USBRequestHandler):
         m.d.usb += [
             self.new_request.eq(0),
             self.manifest.eq(0),
+            self.download_start.eq(0),
         ]
 
         with m.FSM(domain="usb"):

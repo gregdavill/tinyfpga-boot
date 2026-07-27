@@ -11,9 +11,7 @@ from amaranth.lib import wiring
 from blocks.luna_wrapper import USBStreamInEndpoint, USBStreamOutEndpoint
 from blocks.scsi import SCSIHandler, MassStorageRequestHandler
 from blocks.uf2 import UF2Decoder
-from blocks.flash import QspiFlash
-from blocks.dual_bank_writer import DualBankWriter
-from tools.ecp_bitstream import flash_header
+from blocks.flash import FlashPort
 
 from . import Backend, Reconfig, Status
 
@@ -21,6 +19,7 @@ from . import Backend, Reconfig, Status
 class Uf2MscBackend(Backend):
     device_class = (0, 0, 0)
     personality = "UF2"
+    writes_flash = True
 
     def __init__(self, config, *, hs, alloc=None):
         super().__init__(config, hs=hs, alloc=alloc)
@@ -45,14 +44,12 @@ class Uf2MscBackend(Backend):
         self.scsi  = SCSIHandler(block_count=16 * 1024 * 1024 // 512,
                                  block_size=512, **scsi_kwargs)
         self.uf2   = UF2Decoder(base_addr=config.reload_image_offset)
-        self.flash = QspiFlash()
 
         self.has_ram_bank = config.has_ram_bank
-        if self.has_ram_bank:
-            self.writer = DualBankWriter(
-                header_bytes=flash_header(),
-                base_addr=config.reload_image_offset)
-            self.cfg_ctrl_o = self.writer.cfg_ctrl_o
+        # Flash-write port + status fed back by bind_writers from the backing.
+        self.wr      = FlashPort.create()
+        self.writing = Signal()   # backing.active
+        self.arm_in  = Signal()   # backing.arm
 
     def populate_configuration(self, c, *, bulk_mps):
         c.bMaxPower = 100
@@ -87,14 +84,12 @@ class Uf2MscBackend(Backend):
         m.submodules.scsi = scsi = ResetInserter(
             usb.reset_detected | self.ms_handler.reset)(self.scsi)
         m.submodules.uf2 = uf2 = self.uf2
-        m.submodules.flash = flash = self.flash
 
         wiring.connect(m, ep_out=self.out_ep.o, scsi=scsi.rx)
         wiring.connect(m, ep_in=self.in_ep.i, scsi=scsi.tx)
 
         wiring.connect(m, scsi.write_stream, uf2.i)
         m.d.comb += [
-            flash.done.eq(uf2.done),
             # Surface UF2 decode errors (e.g. bad end magic) to the host via
             # the SCSI CSW status byte.
             scsi.error_in.eq(uf2.error),
@@ -104,38 +99,23 @@ class Uf2MscBackend(Backend):
             uf2.clear.eq(scsi.clear_decoder | usb.reset_detected),
         ]
 
-        if not self.has_ram_bank:
-            wiring.connect(m, uf2.o, flash.i)
-            self.qo, self.qi = flash.qo, flash.qi
-            arm = uf2.done
-            writing  = flash.qo.valid
-            activity = scsi.rx.valid | scsi.tx.valid | writing
-        else:
-            m.submodules.writer = writer = self.writer
-
-            # A UF2 tagged with the RAM familyID streams into the PSRAM; any
-            # other image is erased/programmed into FLASH. familyID is latched
-            # from each block header before its payload is emitted.
-            ram_select = Signal()
-            m.d.comb += ram_select.eq(uf2.familyID == self.config.ram_family_id)
-
-            # FLASH keeps the decoder's slot-1 relocation; the RAM image is a
-            # standalone bitstream based at 0
-            m.d.comb += [
-                writer.i.p.data.eq(uf2.o.p.data),
-                writer.i.p.addr.eq(Mux(ram_select,
-                                       uf2.o.p.addr - self.uf2.base_addr,
-                                       uf2.o.p.addr)),
-                writer.i.valid.eq(uf2.o.valid),
-                uf2.o.ready.eq(writer.i.ready),
-                writer.ram_select.eq(ram_select),
-                writer.done.eq(uf2.done),
-                writer.clear.eq(usb.reset_detected),
-            ]
-            self.qo, self.qi = writer.qo, writer.qi
-            arm = writer.arm
-            writing  = writer.active
-            activity = scsi.rx.valid | scsi.tx.valid | writing
+        # Drive the flash-write port
+        ram_select = Signal()
+        m.d.comb += ram_select.eq(
+            (uf2.familyID == self.config.ram_family_id) if self.has_ram_bank else 0)
+        m.d.comb += [
+            self.wr.w.p.data.eq(uf2.o.p.data),
+            self.wr.w.p.addr.eq(Mux(ram_select,
+                                    uf2.o.p.addr - self.uf2.base_addr,
+                                    uf2.o.p.addr)),
+            self.wr.w.valid.eq(uf2.o.valid),
+            uf2.o.ready.eq(self.wr.w.ready),
+            self.wr.flush.eq(uf2.done),
+            self.wr.ram_select.eq(ram_select),
+        ]
+        writing  = self.writing
+        arm      = self.arm_in
+        activity = scsi.rx.valid | scsi.tx.valid | writing
 
         # Status: ERROR (bad UF2) > DONE (decode, reload) > ACTIVE (image being written) > IDLE (default).
         with m.If(uf2.error):

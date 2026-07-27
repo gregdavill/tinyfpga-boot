@@ -18,11 +18,20 @@ class PollReturn(enum.Enum, shape=2):
     IDLE       = 2
 
 
+#: The write side a flash-writing backend drives, and a `QspiFlash` /
+#: `DualBankWriter` backing consumes.
+FlashPort = wiring.Signature({
+    "w":          Out(stream.Signature(data.StructLayout({"addr": 24, "data": 8}))),
+    "flush":      Out(1),   # triggers final page close + poll
+    "ram_select": Out(1),   # route to PSRAM (dual-bank only)
+})
+
+
 class QspiFlash(wiring.Component):
     def __init__(self):
         super().__init__({
-            # Write addr/data interface (from UF2 decoder)
-            "i":    In(stream.Signature(data.StructLayout({"addr": 24, "data": 8}))),
+            # Write side (addr/data stream + flush); `ram_select` is ignored.
+            "port": In(FlashPort),
 
             # FLASH QSPI interface
             "qo":   Out(stream.Signature(data.StructLayout({
@@ -34,12 +43,22 @@ class QspiFlash(wiring.Component):
                 "data": 8,
             }))),
 
-            # Flush signal — triggers final page close + poll
-            "done": In(1),
+            # Backing status.
+            "arm":        Out(1),   # transfer complete → ready to reboot
+            "active":     Out(1),   # driving the QSPI bus (writing)
+            "cfg_ctrl_o": Out(1),   # bank latch — single-bank is always FLASH (0)
         })
 
     def elaborate(self, platform) -> Module:
         m = Module()
+
+        # Write stream in, backing status out.
+        i = self.port.w
+        m.d.comb += [
+            self.arm.eq(self.port.flush),   # single-bank: flush ⇒ ready to reboot
+            self.active.eq(self.qo.valid),
+            self.cfg_ctrl_o.eq(0),
+        ]
 
         # Latched input
         addr_latch = Signal(24)
@@ -75,13 +94,13 @@ class QspiFlash(wiring.Component):
 
         with m.FSM():
             with m.State("IDLE"):
-                m.d.comb += self.i.ready.eq(1)
-                with m.If(self.i.valid):
+                m.d.comb += i.ready.eq(1)
+                with m.If(i.valid):
                     m.d.sync += [
-                        addr_latch.eq(self.i.p.addr),
-                        data_latch.eq(self.i.p.data),
+                        addr_latch.eq(i.p.addr),
+                        data_latch.eq(i.p.data),
                     ]
-                    with m.If(~block_valid | (self.i.p.addr[16:24] != current_block)):
+                    with m.If(~block_valid | (i.p.addr[16:24] != current_block)):
                         # New block — erase first
                         m.d.sync += wren_target.eq(0)  # ERASE
                         m.next = "WREN"
@@ -167,20 +186,20 @@ class QspiFlash(wiring.Component):
                     m.next = "WRITE_NEXT"
 
             with m.State("WRITE_NEXT"):
-                m.d.comb += self.i.ready.eq(1)
-                with m.If(self.i.valid):
+                m.d.comb += i.ready.eq(1)
+                with m.If(i.valid):
                     m.d.sync += [
-                        addr_latch.eq(self.i.p.addr),
-                        data_latch.eq(self.i.p.data),
+                        addr_latch.eq(i.p.addr),
+                        data_latch.eq(i.p.data),
                         has_next.eq(1),
                     ]
-                    with m.If(self.i.p.addr[8:24] == current_page):
+                    with m.If(i.p.addr[8:24] == current_page):
                         # Same page — continue writing
                         m.next = "WRITE_DATA"
                     with m.Else():
                         # Different page — close this page
                         m.next = "WRITE_RELEASE"
-                with m.Elif(self.done):
+                with m.Elif(self.port.flush):
                     m.d.sync += has_next.eq(0)
                     m.next = "WRITE_RELEASE"
 
@@ -258,8 +277,8 @@ class TestQspiFlash(unittest.TestCase):
             wiring.connect(m, flash.qo, qspi.i)
             wiring.connect(m, flash.qi, qspi.o)
 
-            self.i = flash.i
-            self.done = flash.done
+            self.i = flash.port.w
+            self.done = flash.port.flush
 
             m.d.comb += qspi.divisor.eq(1)
 

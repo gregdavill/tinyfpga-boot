@@ -13,7 +13,7 @@ from blocks.serial_source import FlashUidSerialSource, SecurityPageSerialSource
 from blocks.usb.serial_handler import USBStreamSerialDescriptorHandler
 from blocks.usb.vendor_spi import VendorSpiHandler
 
-from backends import BACKENDS
+from backends import BACKENDS, create_backing, bind_writers
 from backends.composite import CompositeBackend
 from staysource import NoValidAppStaySource
 from staysource.no_valid_app import SYNC_WORDS, POISON_WORD
@@ -248,6 +248,14 @@ class Top(Elaboratable):
         # Backend datapath: registers its submodules + wiring, exposes the
         # QSPI-facing streams, and reports the reconfigure arm/activity.
         rc = self.backend.build(m, usb=usb)
+
+        # A lone flash-writer backend doesn't own its backing either: create the
+        # board's backing and connect its single write port 1:1. Composites bind
+        # their writers internally (a composite's own writes_flash stays False).
+        if self.backend.writes_flash:
+            backing = create_backing(m, config=self.config, reset=usb.reset_detected)
+            bind_writers(m, backing=backing, writers=[self.backend])
+            self.backend.qo, self.backend.qi = backing.qo, backing.qi
 
         # Dual-bank boards drive `cfg_ctrl` (the FLASH/RAM config-source latch)
         # from the backend's bank controller.

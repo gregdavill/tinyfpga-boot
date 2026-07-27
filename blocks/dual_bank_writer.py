@@ -12,7 +12,7 @@ from amaranth.lib import wiring, stream, data
 from amaranth.lib.wiring import In, Out, flipped
 
 from .qspi import Mode
-from .flash import QspiFlash
+from .flash import QspiFlash, FlashPort
 from .qspi_ram import QspiRam
 from .dual_bank import DualBank
 from .boot_header import BootHeader
@@ -35,10 +35,9 @@ class DualBankWriter(wiring.Component):
         self.boot_header = BootHeader(header_bytes=header_bytes, base_addr=base_addr)
 
         super().__init__({
-            # Write stream (addr already correct for the selected bank).
-            "i":          In(stream.Signature(data.StructLayout({"addr": 24, "data": 8}))),
-            "ram_select": In(1),     # route this transfer to RAM (else FLASH)
-            "done":       In(1),     # transfer complete / flush (level)
+            # Write side: addr/data stream (addr already correct for the
+            # selected bank) + flush + ram_select (route this transfer to RAM).
+            "port":       In(FlashPort),
             "clear":      In(1),     # reset the header-ensured latch (new session)
 
             # Muxed QSPI bus, exposed to Top.
@@ -61,7 +60,7 @@ class DualBankWriter(wiring.Component):
         # Easiest to do this before switching to the RAM
         header_done = Signal()
         ensuring    = Signal()
-        m.d.comb += ensuring.eq(self.ram_select & ~header_done)
+        m.d.comb += ensuring.eq(self.port.ram_select & ~header_done)
 
         with m.FSM(name="header"):
             with m.State("WAIT"):
@@ -76,20 +75,20 @@ class DualBankWriter(wiring.Component):
             m.d.sync += header_done.eq(0)
 
         # Route the write stream to the selected writer (one pre-corrected addr).
-        for w in (flash, ram):
-            m.d.comb += w.i.p.eq(self.i.p)
         m.d.comb += [
-            flash.i.valid.eq(self.i.valid & ~self.ram_select),
-            ram.i.valid.eq(self.i.valid & self.ram_select & ~ensuring),
-            flash.done.eq(self.done),
-            ram.done.eq(self.done),
+            flash.port.w.p.eq(self.port.w.p),
+            ram.i.p.eq(self.port.w.p),
+            flash.port.w.valid.eq(self.port.w.valid & ~self.port.ram_select),
+            ram.i.valid.eq(self.port.w.valid & self.port.ram_select & ~ensuring),
+            flash.port.flush.eq(self.port.flush),
+            ram.done.eq(self.port.flush),
         ]
         with m.If(ensuring):
-            m.d.comb += self.i.ready.eq(0)
-        with m.Elif(self.ram_select):
-            m.d.comb += self.i.ready.eq(ram.i.ready)
+            m.d.comb += self.port.w.ready.eq(0)
+        with m.Elif(self.port.ram_select):
+            m.d.comb += self.port.w.ready.eq(ram.i.ready)
         with m.Else():
-            m.d.comb += self.i.ready.eq(flash.i.ready)
+            m.d.comb += self.port.w.ready.eq(flash.port.w.ready)
 
         # Bank-select + tCEM handshake.
         m.d.comb += [
@@ -103,16 +102,16 @@ class DualBankWriter(wiring.Component):
         with m.If(ensuring):
             wiring.connect(m, flipped(self.qo), bh.qo)
             wiring.connect(m, flipped(self.qi), bh.qi)
-        with m.Elif(self.ram_select):
+        with m.Elif(self.port.ram_select):
             wiring.connect(m, flipped(self.qo), ram.qo)
             wiring.connect(m, flipped(self.qi), ram.qi)
         with m.Else():
             wiring.connect(m, flipped(self.qo), flash.qo)
             wiring.connect(m, flipped(self.qi), flash.qi)
 
-        # RAM transfers reconfigure after the writer's boot-arm; FLASH on `done`.
+        # RAM transfers reconfigure after the writer's boot-arm; FLASH on `flush`.
         m.d.comb += [
-            self.arm.eq(Mux(self.ram_select, ram.boot_ready, self.done)),
+            self.arm.eq(Mux(self.port.ram_select, ram.boot_ready, self.port.flush)),
             self.active.eq(flash.qo.valid | ram.qo.valid | bh.qo.valid),
         ]
 
@@ -159,18 +158,18 @@ def _run(*, ram_select, readback, ins, max_cycles=3000):
     async def tb(ctx):
         nonlocal ri, idx, reached
         ctx.set(dut.qo.ready, 1)
-        ctx.set(dut.ram_select, ram_select)
+        ctx.set(dut.port.ram_select, ram_select)
         ctx.set(dut.clear, 1)
         await ctx.tick()
         ctx.set(dut.clear, 0)
         for _ in range(max_cycles):
             # present next input byte when the writer can take one
-            if ctx.get(dut.i.ready) and idx < len(ins):
-                ctx.set(dut.i.valid, 1)
-                ctx.set(dut.i.p.addr, ins[idx][0])
-                ctx.set(dut.i.p.data, ins[idx][1])
+            if ctx.get(dut.port.w.ready) and idx < len(ins):
+                ctx.set(dut.port.w.valid, 1)
+                ctx.set(dut.port.w.p.addr, ins[idx][0])
+                ctx.set(dut.port.w.p.data, ins[idx][1])
             else:
-                ctx.set(dut.i.valid, 0)
+                ctx.set(dut.port.w.valid, 0)
             # feed qi during any capture (qi.ready high)
             cap = ctx.get(dut.qi.ready)
             ctx.set(dut.qi.valid, 1 if cap else 0)
@@ -178,7 +177,7 @@ def _run(*, ram_select, readback, ins, max_cycles=3000):
             if ctx.get(dut.qo.valid):
                 octets.append((ctx.get(dut.qo.p.chip),
                                ctx.get(dut.qo.p.mode), ctx.get(dut.qo.p.data)))
-            consumed_i  = ctx.get(dut.i.valid) and ctx.get(dut.i.ready)
+            consumed_i  = ctx.get(dut.port.w.valid) and ctx.get(dut.port.w.ready)
             consumed_qi = cap
             await ctx.tick()
             if consumed_i:
@@ -186,7 +185,7 @@ def _run(*, ram_select, readback, ins, max_cycles=3000):
             if consumed_qi and ri < len(readback):
                 ri += 1
             if idx >= len(ins):
-                ctx.set(dut.done, 1)
+                ctx.set(dut.port.flush, 1)
             if ctx.get(dut.arm):
                 reached = True
                 break
