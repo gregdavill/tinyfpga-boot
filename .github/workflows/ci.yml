@@ -37,7 +37,9 @@ jobs:
           - { board: ecpbreaker,  backend: all }
           - { board: butterstick, backend: all }
           # UP5K targets only build as uf2 + dfu composite for space
-          - { board: fomu,        backend: "uf2,dfu" }
+          - { board: fomu-evt,    backend: "uf2,dfu" }
+          - { board: fomu-hacker, backend: "uf2,dfu" }
+          - { board: fomu-pvt,    backend: "uf2,dfu" }
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-nix

@@ -1,4 +1,4 @@
-"""Fomu PVT (iCE40 UP5K)"""
+"""Fomu Hacker (iCE40 UP5K)"""
 
 from amaranth import *
 from amaranth_boards.fomu_hacker import FomuHackerPlatform as _FomuBase
@@ -8,11 +8,10 @@ from config import BoardConfig, SerialSource, SLOT1_OFFSET, Backend
 from staysource import WriteEnableStaySource, AlwaysStaySource
 
 
-class FomuPVTPlatform(ICE40Mixin, _FomuBase):
-    """Fomu PVT, full-speed: 48 MHz `usb_io` + 12 MHz `sync`.
+class FomuHackerPlatform(ICE40Mixin, _FomuBase):
+    """Fomu Hacker, full-speed: 48 MHz `usb_io` + 12 MHz `sync`.
 
-    The on-board 48 MHz oscillator (`clk48`) is used for
-    usb_io clk, no PLL needed.
+    The on-board 48 MHz oscillator (`clk48`) is used for usb_io clk.
     """
 
     def create_clocks(self, m):
@@ -20,7 +19,7 @@ class FomuPVTPlatform(ICE40Mixin, _FomuBase):
         cd_sync = ClockDomain("sync")
         m.domains += [cd_usb_io, cd_sync]
 
-        # clk48 is already 48 MHz on a global buffer; use it as `usb_io`.
+        # clk48 is used as `usb_io`.
         m.d.comb += cd_usb_io.clk.eq(self.request(self.default_clk, dir="i").i)
         self.add_clock_constraint(cd_usb_io.clk, 48e6)
         self.add_clock_constraint(cd_sync.clk, 12e6)
@@ -35,8 +34,8 @@ class FomuPVTPlatform(ICE40Mixin, _FomuBase):
 
 
 board = BoardConfig(
-    name="fomu",
-    platform=FomuPVTPlatform,
+    name="fomu-hacker",
+    platform=FomuHackerPlatform,
     vid=0x1209,
     pid=0x5bf0,
     manufacturer="Foosn",

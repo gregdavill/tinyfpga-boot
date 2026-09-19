@@ -47,6 +47,10 @@ class _ProjectPlatform:
         """High when USB may pull up and enumerate."""
         return C(1)
 
+    def configure_usb(self, m):
+        """Board-specific USB pad setup beyond the d_p/d_n/pullup resource the
+        PHY drives. Most boards bond exactly those pins and need nothing."""
+
     def create_status_led(self, m, status):
         """Drive a board status indicator from `status`
         """
