@@ -23,6 +23,9 @@ from staysource.no_valid_app import SYNC_WORDS, POISON_WORD
 # advertised in the 0xEE OS string descriptor.
 MSFT_VENDOR_CODE = 0xEE
 
+# Device interface GUID reported to Windows for the WinUSB-bound interface.
+MSFT_DEVICE_INTERFACE_GUID = "{BDA1FD37-0EA5-45FE-BC0F-F98C6C2AFC13}"
+
 
 def _ms_os_string_descriptor(vendor_code):
     """MS OS 1.0 string descriptor served at string index 0xEE: the "MSFT100"
@@ -82,6 +85,7 @@ class Top(Elaboratable):
 
         from usb_protocol.emitters.descriptors.microsoft10 import (
             MicrosoftOS10DescriptorCollection)
+        from usb_protocol.types.descriptors.microsoft10 import RegistryTypes
         from luna.gateware.usb.request.windows import MicrosoftOS10RequestHandler
 
         ms = MicrosoftOS10DescriptorCollection()
@@ -90,6 +94,18 @@ class Top(Elaboratable):
                 with d.Function() as f:
                     f.bFirstInterfaceNumber = if_num
                     f.compatibleID          = compat
+
+        # Extended properties (wIndex 5): the device interface GUID winusb.sys
+        # needs before applications can open the interface. One blob covers the
+        # device — the request handler serves it to whichever interface asks —
+        # which is fine while only one interface binds WinUSB.
+        with ms.ExtendedPropertiesDescriptor() as d:
+            with d.Property() as p:
+                p.dwPropertyDataType = RegistryTypes.REG_MULTI_SZ
+                p.PropertyName       = "DeviceInterfaceGUIDs"
+                # REG_MULTI_SZ is a NUL-separated list closed by a final NUL;
+                # the trailing "" is what emits that terminator.
+                p.PropertyData       = [MSFT_DEVICE_INTERFACE_GUID, ""]
         return MicrosoftOS10RequestHandler(ms, request_code=MSFT_VENDOR_CODE)
 
     def create_descriptors(self, hs):
