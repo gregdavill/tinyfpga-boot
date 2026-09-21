@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: ./.github/actions/setup-nix
       - run: nix develop -c true   # realise the dev shell into /nix/store
 
@@ -42,6 +44,8 @@ jobs:
           - { board: fomu-pvt,    backend: "uf2,dfu" }
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: ./.github/actions/setup-nix
       - run: nix develop -c python build.py --board ${{ matrix.board }} --backend ${{ matrix.backend }}
       - uses: actions/upload-artifact@v6
@@ -61,6 +65,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: ./.github/actions/setup-nix
       - name: Run cocotb suite
         run: |
@@ -91,6 +97,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: ./.github/actions/setup-nix
       - run: >
           nix develop -c python -m unittest -v
@@ -105,5 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       - uses: ./.github/actions/setup-nix
       - run: nix develop -c bash -c 'cd formal && make'

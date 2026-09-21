@@ -42,8 +42,12 @@
           # gateware
           amaranth
           amaranth-boards
-          luna-usb
           usb-protocol
+          # luna itself is vendored (vendor/luna submodule, on PYTHONPATH
+          # below); these are the runtime dependencies it declares.
+          libusb1
+          pyserial
+          pyvcd
           # sim + tests
           cocotbUnbroken
           cocotb-bus
@@ -81,6 +85,10 @@
           ]);
 
           shellHook = ''
+            # Vendored LUNA fork (vendor/luna submodule) rather than nixpkgs'
+            # luna-usb: it carries gateware changes this project depends on.
+            export PYTHONPATH="$(git rev-parse --show-toplevel)/vendor/luna''${PYTHONPATH:+:$PYTHONPATH}"
+
             echo
             echo "tinybx-bootloader nix dev shell"
             printf "  yosys     %s\n" "$(yosys -V 2>/dev/null | head -1)"
@@ -90,6 +98,7 @@
             printf "  cocotb    %s\n" "$(cocotb-config --version 2>/dev/null)"
             printf "  python    %s\n" "$(python --version)"
             echo "  amaranth  $(python -c 'import amaranth; print(amaranth.__version__)' 2>/dev/null)"
+            echo "  luna      $(python -c 'import luna, os; print(os.path.dirname(luna.__file__))' 2>/dev/null)"
             echo
           '';
         };
