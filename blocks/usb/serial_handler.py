@@ -39,7 +39,7 @@ class USBStreamSerialDescriptorHandler(USBRequestHandler):
         m = Module()
 
         m.submodules.mem = mem = Memory(
-            shape=unsigned(8), depth=self.max_len, init=[])
+            shape=unsigned(8), depth=self.max_len, init=[], attrs={"ram_style": "block"})
         wport = mem.write_port(domain="sync")
         rport = mem.read_port(domain="usb")
 

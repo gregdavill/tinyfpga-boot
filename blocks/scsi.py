@@ -180,7 +180,7 @@ class SCSIHandler(wiring.Component):
     def elaborate(self, platform):
         m = Module()
 
-        m.submodules.rom = rom = memory.Memory(shape=8, depth=len(self._rom_data), init=self._rom_data)
+        m.submodules.rom = rom = memory.Memory(shape=8, depth=len(self._rom_data), init=self._rom_data, attrs={"ram_style": "block"})
         rom_rp = rom.read_port(domain="sync")
 
         # GhostFAT submodule

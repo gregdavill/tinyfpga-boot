@@ -50,7 +50,7 @@ class BootHeader(wiring.Component):
         N = self._n
 
         m.submodules.rom = rom = memory.Memory(
-            shape=8, depth=N, init=self._header)
+            shape=8, depth=N, init=self._header, attrs={"ram_style": "block"})
         rp = rom.read_port(domain="sync")
 
         idx        = Signal(range(N + 1))
