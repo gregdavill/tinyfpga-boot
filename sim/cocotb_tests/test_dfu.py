@@ -5,6 +5,8 @@ descriptors, GET_STATUS, DNLOAD a block, and the zero-length manifestation
 that flushes the page and arms SB_WARMBOOT.
 """
 
+import re
+
 import cocotb
 from cocotb.triggers import Timer
 
@@ -40,7 +42,9 @@ DFU_AREA_BASE = 0x40000
 MS_OS_STRING_INDEX  = 0xEE
 MSFT_VENDOR_CODE    = 0xEE
 MS_COMPAT_ID_INDEX  = 0x0004    # wIndex for the Extended Compat ID descriptor
+MS_EXT_PROPS_INDEX  = 0x0005    # wIndex for the Extended Properties descriptor
 RT_VENDOR_DEV_IN    = 0xC0      # vendor | device recipient, device -> host
+RT_VENDOR_IF_IN     = 0xC1      # vendor | interface recipient, device -> host
 
 TIMEOUT_ENUM = 2_000   # full enumeration walk
 TIMEOUT_DFU  = 5_000   # DNLOAD + page-program drain
@@ -162,6 +166,35 @@ async def test_dfu_winusb_auto_install(dut):
     assert compat[16] == 0, f"compat-ID first-interface = {compat[16]}, expected 0"
     assert compat[18:24] == b"WINUSB", \
         f"compatibleID = {compat[18:26].hex()}, expected WINUSB"
+
+    # 3) Extended Properties descriptor (wIndex = 5), addressed to the DFU
+    # interface. Without the DeviceInterfaceGUIDs it carries, winusb.sys binds
+    # but registers no interface for libusb/dfu-util to open.
+    props = await host.control_in(
+        RT_VENDOR_IF_IN, vendor_code,
+        w_value=compat[16], w_index=MS_EXT_PROPS_INDEX, w_length=0x100)
+    dw_length, w_index, w_count = (
+        int.from_bytes(props[0:4], "little"),
+        int.from_bytes(props[6:8], "little"),
+        int.from_bytes(props[8:10], "little"))
+    assert dw_length == len(props), \
+        f"dwLength {dw_length} != {len(props)} bytes received"
+    assert (w_index, w_count) == (MS_EXT_PROPS_INDEX, 1), \
+        f"wIndex/wCount = {w_index}/{w_count}, expected {MS_EXT_PROPS_INDEX}/1"
+
+    # Single property section: REG_MULTI_SZ DeviceInterfaceGUIDs = one GUID.
+    data_type  = int.from_bytes(props[14:18], "little")
+    name_len   = int.from_bytes(props[18:20], "little")
+    name       = props[20:20 + name_len].decode("utf-16-le").rstrip("\0")
+    data_len   = int.from_bytes(props[20 + name_len:24 + name_len], "little")
+    data       = props[24 + name_len:24 + name_len + data_len].decode("utf-16-le")
+    assert data_type == 7, f"dwPropertyDataType = {data_type}, expected 7 (REG_MULTI_SZ)"
+    assert name == "DeviceInterfaceGUIDs", f"property name = {name!r}"
+    assert data.endswith("\0\0"), \
+        f"REG_MULTI_SZ not doubly NUL-terminated: {data!r}"
+    guid = data.rstrip("\0")
+    assert re.fullmatch(r"\{[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}\}", guid), \
+        f"DeviceInterfaceGUIDs = {guid!r}, expected a braced GUID"
 
 
 @cocotb.test(timeout_time=TIMEOUT_ENUM, timeout_unit="us")
