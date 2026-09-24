@@ -199,7 +199,7 @@ def main():
         _dump(flash.read_sec(addr, SEC_REG_SIZE))
         return
 
-    uuid_str = (args.uuid or str(uuid6.uuid7())).upper()
+    uuid_str = (args.uuid or str(uuid6.uuid7())).lower()
     if len(uuid_str) > 36:
         raise SystemExit("uuid longer than 36 chars (gateware descriptor max_len)")
 
