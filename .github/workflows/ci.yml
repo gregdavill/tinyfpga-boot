@@ -70,24 +70,24 @@ jobs:
       - uses: ./.github/actions/setup-nix
       - name: Run cocotb suite
         run: |
-          nix develop -c bash -c 'cd sim && make'
-          nix develop -c bash -c 'cd sim && make SERIAL_SOURCE=security_page'
-          nix develop -c bash -c 'cd sim && make TARGET=hs'
-          nix develop -c bash -c 'cd sim && make BACKEND=serial'
-          nix develop -c bash -c 'cd sim && make BACKEND=dfu'
+          nix develop -c bash -c 'cd tests/sim && make'
+          nix develop -c bash -c 'cd tests/sim && make SERIAL_SOURCE=security_page'
+          nix develop -c bash -c 'cd tests/sim && make TARGET=hs'
+          nix develop -c bash -c 'cd tests/sim && make BACKEND=serial'
+          nix develop -c bash -c 'cd tests/sim && make BACKEND=dfu'
 
           # Auto-boot:
-          nix develop -c bash -c 'cd sim && make AUTOBOOT=1'
-          nix develop -c bash -c 'cd sim && make AUTOBOOT=1 COCOTB_TEST_FILTER=test_no_valid_app_stays'
-          nix develop -c bash -c 'cd sim && make AUTOBOOT=1 COCOTB_TEST_FILTER=test_write_enable_latch_stays'
-          nix develop -c bash -c 'cd sim && make AUTOBOOT=1 COCOTB_TEST_FILTER=test_button_held_stays'
+          nix develop -c bash -c 'cd tests/sim && make AUTOBOOT=1'
+          nix develop -c bash -c 'cd tests/sim && make AUTOBOOT=1 COCOTB_TEST_FILTER=test_no_valid_app_stays'
+          nix develop -c bash -c 'cd tests/sim && make AUTOBOOT=1 COCOTB_TEST_FILTER=test_write_enable_latch_stays'
+          nix develop -c bash -c 'cd tests/sim && make AUTOBOOT=1 COCOTB_TEST_FILTER=test_button_held_stays'
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: coverage-report
           path: |
-            sim/build/coverage_report.txt
-            sim/build/coverage_report.yaml
+            tests/sim/build/coverage_report.txt
+            tests/sim/build/coverage_report.yaml
           if-no-files-found: warn
 
   # Block-level unit tests.
@@ -100,12 +100,7 @@ jobs:
         with:
           submodules: true
       - uses: ./.github/actions/setup-nix
-      - run: >
-          nix develop -c python -m unittest -v
-          blocks.flash blocks.flash_uid blocks.ghostfat
-          blocks.qspi blocks.scsi blocks.uf2 blocks.spi_bridge
-          blocks.security_page blocks.json_key_parser blocks.hex_encoder
-          staysource.no_valid_app staysource.write_enable
+      - run: nix develop -c python -m unittest discover -v -s tests/unit -t .
 
   formal:
     name: Formal verification
@@ -116,4 +111,4 @@ jobs:
         with:
           submodules: true
       - uses: ./.github/actions/setup-nix
-      - run: nix develop -c bash -c 'cd formal && make'
+      - run: nix develop -c bash -c 'cd tests/formal && make'

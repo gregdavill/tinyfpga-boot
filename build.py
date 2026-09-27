@@ -1,8 +1,8 @@
 import argparse
 from pathlib import Path
 
-from config import BOARDS, MULTIBOOT_ALIGN_BITS, SLOT1_OFFSET, Backend
-from top import Top
+from gateware.boards import BOARDS, MULTIBOOT_ALIGN_BITS, SLOT1_OFFSET, Backend
+from gateware.top import Top
 
 
 # iCE40 warmboot multiboot header: 5 x 32-byte boot-image records that each name
