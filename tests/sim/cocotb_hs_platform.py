@@ -13,3 +13,5 @@ class CocotbHSPlatform(_RawPortCaptureMixin, ECPBreakerR3_0Platform):
     """Sim-friendly view of the ECPBreaker r3.0 (ECP5) high-speed platform."""
 
     toolchain = None
+    # Sim-scale, as with `reload_idle_cycles`: the 50 ms hold outlasts the tests.
+    USB_PHY_RESET_CYCLES = 1000

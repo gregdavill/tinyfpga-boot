@@ -192,7 +192,7 @@ class Top(Elaboratable):
 
         usb_bus = platform.request(platform.default_usb_connection)
         platform.configure_usb(m)
-        m.submodules.usb = usb = DomainRenamer({'usb':'sync'})(USBDevice(bus=usb_bus))
+        m.submodules.usb = usb = DomainRenamer({'usb':platform.usb_domain})(USBDevice(bus=usb_bus))
 
         # QSPI flash; the clock routing is platform-specific.
         if platform.flash_clk == "usrmclk":

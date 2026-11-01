@@ -37,6 +37,7 @@ class _ProjectPlatform:
     usb_phy     = "gateware_fs"
     flash_clk   = "pad"
     default_usb_connection = "usb"
+    usb_domain  = "sync"
 
 
     @property
@@ -131,6 +132,15 @@ class ECP5Mixin(_ProjectPlatform):
     # usb_phy     = "ulpi_hs"
     flash_clk   = "usrmclk"
 
+    # Held in reset before reconfiguring (HS only): the board pulls the PHY's
+    # RESETn high, so nothing else resets it across the reconfigure. Long
+    # enough for the host to see a clean disconnect.
+    USB_PHY_RESET_CYCLES = 3_000_000  # ~50 ms at the 60 MHz sync clk
+
+    @property
+    def usb_domain(self):
+        return "usb" if self.is_hs else "sync"
+
     def create_clocks(self, m):
         cd_sync = ClockDomain("sync")
         m.domains += cd_sync
@@ -148,6 +158,17 @@ class ECP5Mixin(_ProjectPlatform):
 
             # Reset until the PLL locks.
             m.d.comb += cd_sync.rst.eq(~pll.locked)
+
+            # Same clock as sync, so the PHY's reset pin (and the USB stack
+            # with it) can be asserted without resetting the reconfigure
+            # logic that's timing the hold.
+            cd_usb = ClockDomain("usb")
+            m.domains += cd_usb
+            self._usb_phy_reset = Signal()
+            m.d.comb += [
+                cd_usb.clk.eq(cd_sync.clk),
+                cd_usb.rst.eq(cd_sync.rst | self._usb_phy_reset),
+            ]
         else:
             cd_usb_io = ClockDomain("usb_io")
             m.domains += cd_usb_io
@@ -175,9 +196,13 @@ class ECP5Mixin(_ProjectPlatform):
         # Pulling PROGRAMN pin low will reload from flash,
         # A i/o pin is connected to PROGRAMN at board level
         m.submodules.reconfigure = rc = ResetInserter(reset)(
-            OpenDrainReconfigure(idle_cycles=idle_cycles))
+            OpenDrainReconfigure(
+                idle_cycles=idle_cycles,
+                phy_reset_cycles=self.USB_PHY_RESET_CYCLES if self.is_hs else 0))
         m.d.comb += [
             rc.arm.eq(arm),
             rc.activity.eq(activity),
         ]
+        if self.is_hs:
+            m.d.comb += self._usb_phy_reset.eq(rc.phy_reset)
         return rc

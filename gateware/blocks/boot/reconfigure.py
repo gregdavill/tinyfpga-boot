@@ -8,6 +8,7 @@ no-op where the fabric has no such primitive).
     arm:      latch a pending reconfigure (e.g. uf2.done).
     activity: high while mid-transaction; reconfigure waits for quiet.
     boot:     pulses high when reconfiguration is triggered (status/probe).
+    phy_reset: high while a USB PHY is held in reset ahead of `boot`.
 """
 
 from amaranth import *
@@ -20,9 +21,10 @@ from .warmboot import Warmboot
 class SystemReconfigure(wiring.Component):
     """Interface No-op class"""
 
-    arm:      In(1)
-    activity: In(1)
-    boot:     Out(1)
+    arm:       In(1)
+    activity:  In(1)
+    boot:      Out(1)
+    phy_reset: Out(1)
 
     def elaborate(self, platform):
         return Module()
@@ -50,12 +52,20 @@ class WarmbootReconfigure(SystemReconfigure):
 
 
 class OpenDrainReconfigure(SystemReconfigure):
-    """Reconfigure via a board-level open-drain pin connected to PROGRAMN line."""
+    """Reconfigure via a board-level open-drain pin connected to PROGRAMN line.
 
-    def __init__(self, *, idle_cycles=600_000):
+    Once the idle window elapses, `phy_reset` holds for `phy_reset_cycles`
+    before PROGRAMN is pulled, and stays high until the FPGA goes away. The
+    decision is latched at that point: `activity` no longer defers it.
+    """
+
+    def __init__(self, *, idle_cycles=600_000, phy_reset_cycles=0):
         if idle_cycles < 1:
             raise ValueError("idle_cycles must be at least 1")
+        if phy_reset_cycles < 0:
+            raise ValueError("phy_reset_cycles must not be negative")
         self._idle_cycles = idle_cycles
+        self._phy_reset_cycles = phy_reset_cycles
         super().__init__()
 
     def elaborate(self, platform):
@@ -73,8 +83,19 @@ class OpenDrainReconfigure(SystemReconfigure):
         with m.Elif(pending & (idle_cnt != self._idle_cycles)):
             m.d.sync += idle_cnt.eq(idle_cnt + 1)
 
-        fire = pending & (idle_cnt == self._idle_cycles)
-        m.d.comb += self.boot.eq(fire)
+        holding  = Signal()
+        hold_cnt = Signal(range(self._phy_reset_cycles + 1))
+
+        with m.If(pending & (idle_cnt == self._idle_cycles)):
+            m.d.sync += holding.eq(1)
+        with m.If(holding & (hold_cnt != self._phy_reset_cycles)):
+            m.d.sync += hold_cnt.eq(hold_cnt + 1)
+
+        fire = holding & (hold_cnt == self._phy_reset_cycles)
+        m.d.comb += [
+            self.boot.eq(fire),
+            self.phy_reset.eq(holding),
+        ]
 
         port = platform.request("reconfigure", dir="o")
         m.d.comb += [
